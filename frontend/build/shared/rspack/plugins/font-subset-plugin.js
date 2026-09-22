@@ -98,7 +98,19 @@ class FontSubsetPlugin {
 
   async chunksFor(rel, subsetFont) {
     const buf = fs.readFileSync(path.join(this.fontsDir, rel));
-    const key = crypto.createHash("sha1").update(buf).digest("hex").slice(0, 12);
+    // A face may ship a wider companion, named `<stem>.full.ttf`, covering
+    // scripts the web file omits. Lato does: the shipped file is a lean latin
+    // subset, so without this the default font cannot render Cyrillic at all.
+    // The latin chunk still comes from the lean file, so the critical path is
+    // unchanged, and the wider glyphs only arrive when a page needs them.
+    const fullPath = path.join(this.fontsDir, rel.replace(/\.woff2$/, ".full.ttf"));
+    const restBuf = fs.existsSync(fullPath) ? fs.readFileSync(fullPath) : buf;
+    const key = crypto
+      .createHash("sha1")
+      .update(buf)
+      .update(restBuf)
+      .digest("hex")
+      .slice(0, 12);
     const dir = path.dirname(rel);
     fs.mkdirSync(path.join(this.outputDir, dir), { recursive: true });
 
@@ -111,7 +123,8 @@ class FontSubsetPlugin {
       const chunkRel = path.join(dir, `${base}.${key}.${name}.woff2`);
       const chunkPath = path.join(this.outputDir, chunkRel);
       if (!fs.existsSync(chunkPath)) {
-        const subset = await subsetFont(buf, characters, { targetFormat: "woff2" });
+        const from = name === "rest" ? restBuf : buf;
+        const subset = await subsetFont(from, characters, { targetFormat: "woff2" });
         if (name === "rest" && subset.length < MIN_USEFUL_CHUNK_BYTES) {
           made.rest = undefined;
           continue;
