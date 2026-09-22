@@ -1,7 +1,11 @@
 /* eslint-env node */
 /* eslint-disable import/no-commonjs */
+
 /* eslint-disable import/order */
 const NodePolyfillPlugin = require("node-polyfill-webpack-plugin");
+const {
+  FontSubsetPlugin,
+} = require("./frontend/build/shared/rspack/plugins/font-subset-plugin");
 const rspack = require("@rspack/core");
 const BundleAnalyzerPlugin =
   require("webpack-bundle-analyzer").BundleAnalyzerPlugin;
@@ -141,14 +145,14 @@ const config = {
         test: /\.(svg|png)$/,
         // SVG font faces live under frontend/fonts and must stay files: inlining them
         // adds close to a megabyte of base64 to this bundle.
-        exclude: /[\\/]frontend[\\/]fonts[\\/]/,
+        exclude: /[\\/](?:frontend[\\/]fonts|target[\\/]font-subsets)[\\/]/,
         type: "asset/inline",
         resourceQuery: { not: [/component|source/] },
       },
       {
         // Fonts are emitted as files, never inlined: base64 would add megabytes.
         test: /\.(woff2?|ttf|otf|eot|svg)$/,
-        include: /[\\/]frontend[\\/]fonts[\\/]/,
+        include: /[\\/](?:frontend[\\/]fonts|target[\\/]font-subsets)[\\/]/,
         type: "asset/resource",
         generator: {
           // The app build owns these files. Emitting them here as well would race
@@ -304,6 +308,11 @@ const config = {
   },
 
   plugins: [
+    new FontSubsetPlugin({
+      source: __dirname + "/frontend/src/metabase/css/core/fonts.css",
+      fontsDir: __dirname + "/frontend/fonts",
+      outputDir: __dirname + "/target/font-subsets",
+    }),
     ...bundleStatsPlugins("stats-embedding-sdk.json"),
     new rspack.BannerPlugin(getBannerOptions(LICENSE_TEXT)),
     new NodePolyfillPlugin(), // for crypto, among others
