@@ -10,7 +10,10 @@ import {
   trackExplorationAgentMessageSent,
   trackExplorationManualSetupClicked,
 } from "metabase/explorations/analytics";
-import { EXPLORATIONS_AGENT_ID } from "metabase/explorations/components/NewExplorationChat/NewExplorationChat";
+import {
+  EXPLORATIONS_AGENT_ID,
+  EXPLORATIONS_PROFILE_ID,
+} from "metabase/explorations/components/NewExplorationChat/NewExplorationChat";
 import { AIProviderConfigurationModal } from "metabase/metabot/components/AIProviderConfigurationModal";
 import { AIProviderConfigurationNotice } from "metabase/metabot/components/AIProviderConfigurationNotice";
 import { MetabotPromptInput } from "metabase/metabot/components/MetabotPromptInput";
@@ -76,7 +79,7 @@ export function NewExplorationEntry({ selection }: NewExplorationEntryProps) {
     trackExplorationAgentMessageSent("entry");
     submitInput(prompt, {
       preventOpenSidebar: true,
-      profile: "explorations",
+      profile: EXPLORATIONS_PROFILE_ID,
     });
 
     goToPlanPage();

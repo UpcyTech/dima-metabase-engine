@@ -45,6 +45,11 @@ export const METABOT_PROFILES = {
       return t`SQL`;
     },
   },
+  megabot: {
+    get label() {
+      return t`Megabot`;
+    },
+  },
   // deprecated
   slack: {
     get label() {
@@ -86,6 +91,7 @@ export const METABOT_PROFILE_OVERRIDES = {
   DEFAULT: undefined,
   NLQ: "nlq",
   SQL: "sql",
+  MEGABOT: "megabot",
 } as const satisfies Record<string, MetabotProfileId | undefined>;
 
 export const isHistoryEnabledProfile = (profile: string | undefined) =>
@@ -124,6 +130,10 @@ export const TOOL_MESSAGES = {
     active: () => t`Inspecting the visualization`,
     done: () => t`Inspected the visualization`,
   },
+  ask_user: {
+    active: () => t`Asking for clarification`,
+    done: () => t`Asked for clarification`,
+  },
   analyze_data: {
     active: () => t`Analyzing the data`,
     done: () => t`Analyzed the data`,
@@ -142,6 +152,38 @@ export const TOOL_MESSAGES = {
   },
   list_available_fields: { active: () => undefined, done: () => undefined },
   load_skill: { active: () => undefined, done: () => undefined },
+  query_app_db: {
+    active: () => t`Reading app metadata`,
+    done: () => t`Read app metadata`,
+  },
+  run_warehouse_query: {
+    active: () => t`Querying the warehouse`,
+    done: () => t`Queried the warehouse`,
+  },
+  run_warehouse_sql: {
+    active: () => t`Running SQL`,
+    done: () => t`Ran SQL`,
+  },
+  show_result: {
+    active: () => t`Rendering the result`,
+    done: () => t`Rendered the result`,
+  },
+  write_note: {
+    active: () => t`Saving a note`,
+    done: () => t`Saved a note`,
+  },
+  read_note: {
+    active: () => t`Reading notes`,
+    done: () => t`Read notes`,
+  },
+  list_notes: {
+    active: () => t`Listing notes`,
+    done: () => t`Listed notes`,
+  },
+  delete_note: {
+    active: () => t`Deleting a note`,
+    done: () => t`Deleted a note`,
+  },
   read_resource: {
     active: (count) =>
       count == null

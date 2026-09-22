@@ -15,6 +15,7 @@ import { AIProviderConfigurationModal } from "metabase/metabot/components/AIProv
 import { AIProviderConfigurationNotice } from "metabase/metabot/components/AIProviderConfigurationNotice";
 import { MetabotChatEditor } from "metabase/metabot/components/MetabotChat/MetabotChatEditor";
 import { Messages } from "metabase/metabot/components/MetabotChat/MetabotChatMessage";
+import { METABOT_PROFILE_OVERRIDES } from "metabase/metabot/constants";
 import { useRegisterMetabotContextProvider } from "metabase/metabot/context";
 import {
   useMetabotAgent,
@@ -32,6 +33,9 @@ import type { RemoveFromResearchPlanResponse } from "metabase-types/api";
 import S from "./NewExplorationChat.module.css";
 
 export const EXPLORATIONS_AGENT_ID = "explorations";
+
+// Experiment: the New AI Exploration experience drives the `megabot` profile (formerly `explorations`).
+export const EXPLORATIONS_PROFILE_ID = METABOT_PROFILE_OVERRIDES.MEGABOT;
 
 const REMOVE_FROM_RESEARCH_PLAN_TOOL = "remove_from_research_plan";
 const SET_RESEARCH_NAME_TOOL = "set_research_name";
@@ -101,7 +105,7 @@ export function NewExplorationChat({ selection }: NewExplorationChatProps) {
     trackExplorationAgentMessageSent("plan_chat");
     submitInput(prompt, {
       preventOpenSidebar: true,
-      profile: "explorations",
+      profile: EXPLORATIONS_PROFILE_ID,
     });
   }, [prompt, submitInput]);
 
@@ -289,12 +293,12 @@ export function NewExplorationChat({ selection }: NewExplorationChatProps) {
             <Messages
               messages={messages}
               onRetryMessage={(id) =>
-                retryMessage(id, { profile: "explorations" })
+                retryMessage(id, { profile: EXPLORATIONS_PROFILE_ID })
               }
               onContinueMessage={(prompt) =>
                 submitInput(prompt, {
                   preventOpenSidebar: true,
-                  profile: "explorations",
+                  profile: EXPLORATIONS_PROFILE_ID,
                 })
               }
               isDoingScience={isDoingScience}

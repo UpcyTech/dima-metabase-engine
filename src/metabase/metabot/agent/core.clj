@@ -155,7 +155,7 @@
 
 (mr/def ::profile-id
   "Profile identifier keyword."
-  [:enum :embedding_next :internal :sql :nlq :document-generate-content :slackbot :explorations])
+  [:enum :embedding_next :internal :sql :nlq :document-generate-content :slackbot :explorations :megabot])
 
 (mr/def ::tracking-opts
   "Options for snowplow and prometheus analytics tracking."
@@ -256,6 +256,50 @@
                               (update links-key links/invert-slack-links registry-map)))))
           parts)))
 
+(def ^:private compact-history-keep-recent
+  "How many of the most-recent tool outputs to leave untouched when compacting replayed history."
+  3)
+
+(def ^:private compact-history-output-threshold
+  "Only tool outputs longer than this many chars are candidates for elision."
+  2000)
+
+(defn- compact-tool-outputs
+  "Shrink the replayed message array for long loops: replace the `:output` of OLD, large
+  `:tool-output` parts with a one-line stub, keeping the most recent `compact-history-keep-recent`
+  tool outputs and any output under `compact-history-output-threshold` chars verbatim. The tool name
+  lives on the paired `:tool-input` part, so id->function is indexed first. Replay-only: persisted
+  rows keep the full output, and the agent can always re-run the tool to fetch the data again.
+
+  `:keep-recent` and `:threshold` override the `compact-history-keep-recent` /
+  `compact-history-output-threshold` defaults (used by tests to pin behavior)."
+  ([parts] (compact-tool-outputs parts nil))
+  ([parts {:keys [keep-recent threshold]}]
+   (let [keep-recent (or keep-recent compact-history-keep-recent)
+         threshold   (or threshold compact-history-output-threshold)
+         id->fn      (into {}
+                           (keep (fn [p] (when (= :tool-input (:type p)) [(:id p) (:function p)])))
+                           parts)
+         output-idxs (into [] (keep-indexed (fn [i p] (when (= :tool-output (:type p)) i))) parts)
+         keep-idxs   (set (take-last keep-recent output-idxs))]
+     (into []
+           (map-indexed
+            (fn [i part]
+              ;; only OLD tool-outputs are elision candidates; skip the str/count for kept-recent parts
+              (let [raw    (when (and (= :tool-output (:type part))
+                                      (not (contains? keep-idxs i)))
+                             (get-in part [:result :output]))
+                    output (cond (string? raw) raw
+                                 (some? raw)   (str raw)
+                                 :else         nil)]
+                (if (and output (> (count output) threshold))
+                  (assoc-in part [:result :output]
+                            (format "[%s result elided to save context — %d chars. Re-run the tool if you need this data again.]"
+                                    (or (id->fn (:id part)) "tool")
+                                    (count output)))
+                  part)))
+            parts)))))
+
 (defn- call-llm
   "Call the LLM and stream processed parts.
 
@@ -264,10 +308,13 @@
   [memory context profile tools iteration tracking-opts link-registry-atom]
   (let [model        (:model profile)
         system-msg   (messages/build-system-message context profile tools)
-        input-parts  (-> (messages/build-message-history context memory)
-                         (invert-links @link-registry-atom))
+        input-parts  (cond-> (-> (messages/build-message-history context memory)
+                                 (invert-links @link-registry-atom))
+                       (:compact-history? profile)
+                       compact-tool-outputs)
         llm-opts     (cond-> {}
-                       (:required-tool-call? profile) (assoc :tool-choice "required"))]
+                       (:required-tool-call? profile) (assoc :tool-choice "required")
+                       (:max-output-tokens profile)   (assoc :max-tokens (:max-output-tokens profile)))]
     (when *debug-log*
       (debug-log! {:iteration iteration
                    :phase     :request

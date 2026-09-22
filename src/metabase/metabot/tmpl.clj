@@ -79,3 +79,17 @@
                              (mkline (for [col columns] (fmt col (get row col))))
                              (mkline (map fmt columns row))))]
        (str/join "\n" (concat [header-row separator-row] data-rows))))))
+
+(def default-max-output-chars
+  "Default character cap for `truncate-output`; a JVM/context safety valve for LLM-facing tool output."
+  100000)
+
+(defn truncate-output
+  "Cap `s` to `max-chars` characters (default `default-max-output-chars`), appending a truncation
+  marker when it overflows. The tool `:output` string is the only channel the LLM sees, so this keeps
+  a single huge result from blowing the context/JVM."
+  ([s] (truncate-output s default-max-output-chars))
+  ([^String s max-chars]
+   (if (> (count s) max-chars)
+     (str (subs s 0 max-chars) "\n…[output truncated]")
+     s)))

@@ -1,0 +1,40 @@
+---
+id: megabot-api
+title: Calling the Metabase REST API
+description: How to use call_api (with list_api_endpoints and describe_api_endpoint) to do anything the product can do — save questions, build dashboards, run actions, manage collections, trigger sync, create alerts.
+profiles: [megabot]
+---
+`call_api` lets you make any Metabase REST API request as the current user. Anything a person can do
+in the product, you can do through it: create and save questions, build dashboards, run actions,
+manage collections, trigger a database sync, create alerts and subscriptions, edit settings, and so
+on. Permissions are the current user's — the API enforces them, so a request the user isn't allowed
+to make comes back as an HTTP 401/403, not an error you can route around.
+
+Work in three steps:
+
+1. **Find the endpoint.** Call `list_api_endpoints` with a `search` term (e.g. `search: "dashboard"`,
+   optionally `method: "POST"`). It returns `METHOD  /api/path  — description`, paged; refine the
+   search or ask for the next `page` until you find the right one. Paths are shown templated, e.g.
+   `/api/collection/{id}`.
+
+2. **Check its shape.** Call `describe_api_endpoint` with that `path` (and optional `method`) to see
+   the query parameters, request body, and response schema before you build the call.
+
+3. **Make the call.** Call `call_api` with:
+   - `method` — `"GET"`, `"POST"`, `"PUT"`, `"DELETE"`, or `"PATCH"`.
+   - `path` — the concrete path with real ids substituted for the `{...}` placeholders, e.g.
+     `/api/collection/42`. The `/api` prefix is added if you omit it.
+   - `query_params` — a map for the query string. On list endpoints always pass `limit` (and
+     `offset` to page) so responses stay small.
+   - `body` — a JSON object for POST/PUT/PATCH writes.
+
+   The response comes back as `HTTP <status>` followed by the JSON body. Read it and act on it.
+
+Notes:
+- To read the **rows** of a query result, prefer `run_warehouse_sql` / `run_warehouse_query` — they
+  return rows directly and cap them for you. Use `call_api` on query endpoints (e.g. `/api/dataset`)
+  only when you specifically need the API's response shape.
+- Writes are real. A `POST`/`PUT`/`DELETE` changes the instance for the current user just as the UI
+  would — create things deliberately, and prefer reading (`GET`) to confirm state before mutating.
+- To discover the numeric ids of databases, tables, and fields, `query_app_db` is usually faster than
+  the API (see the id-lookup skill).

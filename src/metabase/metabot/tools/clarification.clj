@@ -35,6 +35,16 @@
        (when (seq options)
          (str "\n\nOptions:\n" (str/join "\n" (map #(str "- " %) options))))))
 
+(defn- clarification-result
+  "Build the standard clarification tool result: structured question/options, stop-and-wait
+  `instructions`, and the formatted `:output`."
+  [{:keys [question options]} instructions]
+  (let [structured {:question question
+                    :options  (or options [])}]
+    {:structured-output structured
+     :instructions      instructions
+     :output            (format-clarification-output structured)}))
+
 (mu/defn ^{:tool-name "ask_for_sql_clarification"
            :scope     scope/agent-sql-read}
   ask-for-sql-clarification-tool
@@ -51,3 +61,20 @@
       (assoc result :output (format-clarification-output (:structured-output result))))
     (catch Exception e
       {:output (str "Failed to ask clarification: " (or (ex-message e) "Unknown error"))})))
+
+(mu/defn ^{:tool-name "ask_user"}
+  ask-user-tool
+  "Ask the user a clarifying question and stop until they answer. Use this instead of guessing when
+  the request is ambiguous or you are missing something only the user can supply (which database, which
+  metric definition, a date range). `question` is what to ask; `options` optionally offers a few
+  suggested answers. Prefer answering directly when you can — only ask when a wrong guess would waste
+  work. In a profile that lists ask_user as terminal, a successful call ends the turn and waits for the
+  reply."
+  [{:keys [question options]} :- [:map {:closed true}
+                                  [:question :string]
+                                  [:options {:optional true} [:maybe [:sequential :string]]]]]
+  (try
+    (clarification-result {:question question :options options}
+                          "The question has been presented to the user. Stop and wait for their response before continuing.")
+    (catch Exception e
+      {:output (str "Failed to ask the user: " (or (ex-message e) "Unknown error"))})))

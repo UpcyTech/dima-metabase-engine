@@ -1165,3 +1165,28 @@
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"permission"
                               (check! :explorations {:permission/metabot :yes :permission/metabot-nlq :no})))
         (is (nil? (check! :explorations {:permission/metabot :yes :permission/metabot-nlq :yes})))))))
+
+(deftest compact-tool-outputs-test
+  (let [big  (apply str (repeat 3000 "x"))
+        pair (fn [id fn-name output]
+               [{:type :tool-input  :id id :function fn-name :arguments {}}
+                {:type :tool-output :id id :result {:output output}}])]
+    (testing "old, large tool outputs are elided to a stub; the last keep-recent are kept full"
+      (let [parts   (vec (concat [{:type :text :text "hello"}]
+                                 (mapcat #(pair (str "c" %) "query_app_db" big) (range 5))))
+            out     (#'agent/compact-tool-outputs parts {:keep-recent 3 :threshold 2000})
+            outputs (->> out (filter #(= :tool-output (:type %))) (mapv #(get-in % [:result :output])))]
+        (is (= 5 (count outputs)))
+        (is (str/includes? (nth outputs 0) "elided to save context"))
+        (is (str/includes? (nth outputs 0) "query_app_db")
+            "the stub names the tool (looked up from the paired :tool-input part)")
+        (is (str/includes? (nth outputs 1) "elided to save context"))
+        (is (= big (nth outputs 2)) "the last 3 outputs are kept verbatim")
+        (is (= big (nth outputs 3)))
+        (is (= big (nth outputs 4)))
+        (is (= {:type :text :text "hello"} (first out)) "non-tool-output parts are untouched")))
+    (testing "outputs under the threshold are never elided, even when old"
+      (let [parts   (vec (mapcat #(pair (str "c" %) "query_app_db" "tiny") (range 5)))
+            out     (#'agent/compact-tool-outputs parts {:keep-recent 1 :threshold 2000})
+            outputs (->> out (filter #(= :tool-output (:type %))) (mapv #(get-in % [:result :output])))]
+        (is (every? #(= "tiny" %) outputs))))))

@@ -28,7 +28,10 @@ import {
   createMockUserMetabotPermissions,
 } from "metabase-types/api/mocks";
 
-import { NewExplorationChat } from "./NewExplorationChat";
+import {
+  EXPLORATIONS_PROFILE_ID,
+  NewExplorationChat,
+} from "./NewExplorationChat";
 
 jest.mock("metabase/metabot/components/MetabotChat/MetabotChatEditor", () => ({
   MetabotChatEditor: ({ onSubmit }: { onSubmit: () => void }) => (
@@ -305,7 +308,7 @@ describe("NewExplorationChat", () => {
     jest.clearAllMocks();
   });
 
-  it("passes the explorations profile to submitInput and retryMessage", async () => {
+  it("passes the exploration profile to submitInput and retryMessage", async () => {
     const { submitInput, retryMessage } = setup({
       messages: [userMessage, agentMessage],
       isDoingScience: false,
@@ -315,7 +318,7 @@ describe("NewExplorationChat", () => {
     await userEvent.click(await screen.findByTestId("exploration-chat-submit"));
     expect(submitInput).toHaveBeenCalledWith("Why is revenue down?", {
       preventOpenSidebar: true,
-      profile: "explorations",
+      profile: EXPLORATIONS_PROFILE_ID,
     });
     expect(trackExplorationAgentMessageSent).toHaveBeenCalledWith("plan_chat");
 
@@ -323,7 +326,7 @@ describe("NewExplorationChat", () => {
       await screen.findByTestId("metabot-chat-message-retry"),
     );
     expect(retryMessage).toHaveBeenCalledWith("agent-1", {
-      profile: "explorations",
+      profile: EXPLORATIONS_PROFILE_ID,
     });
   });
 

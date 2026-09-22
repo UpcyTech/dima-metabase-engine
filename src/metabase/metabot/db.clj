@@ -48,6 +48,18 @@
   [metabot-id :- ms/PositiveInt]
   (t2/exists? :model/Metabot :id metabot-id))
 
+(mu/defn run-read-only-app-db-sql
+  "Run a raw SQL string verbatim against the application database inside a **rollback-only**
+  transaction and return the result rows. Used only by the experimental megabot `query_app_db` tool.
+
+  The tool restricts `sql` to read statements (SELECT / WITH / EXPLAIN / SHOW) before calling this;
+  the rollback-only transaction is the real guarantee: even a write that slips past that keyword
+  check (a data-modifying CTE, `EXPLAIN ANALYZE <dml>`, a volatile function) is undone rather than
+  committed. A plain read has nothing to roll back and returns its rows normally."
+  [sql :- :string]
+  (t2/with-transaction [conn nil {:rollback-only true}]
+    (t2/query conn [sql])))
+
 (mu/defn update-metabot!
   "Apply `changes` to the Metabot with `metabot-id`."
   [metabot-id :- ms/PositiveInt
@@ -1038,3 +1050,34 @@
   "The ID, name, description, Table ID, and entity ID of the Segments with `ids`."
   [ids :- [:sequential ms/PositiveInt]]
   (t2/select [:model/Segment :id :name :description :table_id :entity_id] :id [:in ids]))
+
+;;; -------------------------------------------------- Megabot notes --------------------------------------------------
+
+(mu/defn note-catalog
+  "The key, summary, and last-updated time of every megabot note, most-recently-updated first.
+  Feeds the note catalog injected into the megabot system prompt and the `list_notes` tool."
+  []
+  (t2/select [:model/MetabotNote :note_key :summary :updated_at]
+             {:order-by [[:updated_at :desc] [:note_key :asc]]}))
+
+(mu/defn note-bodies-by-keys
+  "The key and full content of the megabot notes whose `note_key` is in `note-keys`. Feeds `read_note`."
+  [note-keys :- [:sequential :string]]
+  (when (seq note-keys)
+    (t2/select [:model/MetabotNote :note_key :content] :note_key [:in note-keys])))
+
+(mu/defn upsert-note!
+  "Insert or update the megabot note with `note-key`, setting its `summary`, `content`, and
+  `creator-id`. Returns the note's primary key."
+  [note-key :- :string
+   summary :- :string
+   content :- :string
+   creator-id :- [:maybe ::lib.schema.id/user]]
+  (mdb/update-or-insert! :model/MetabotNote {:note_key note-key}
+                         (fn [_existing]
+                           {:summary summary :content content :creator_id creator-id})))
+
+(mu/defn delete-note!
+  "Delete the megabot note with `note-key`, returning the number of rows deleted."
+  [note-key :- :string]
+  (t2/delete! :model/MetabotNote :note_key note-key))
