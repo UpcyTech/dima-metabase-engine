@@ -220,7 +220,7 @@
         (> (count user-ids) 1)
         (and (seq user-ids) (not= user-ids #{originator})))))
 
-(defn- assert-certified-subject! [conversation messages]
+(defn- assert-certified-subject! [conversation]
   (let [current-user api/*current-user-id*
         originator   (:user_id conversation)]
     (when-not current-user
@@ -229,9 +229,6 @@
     (when-not originator
       (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
              "Conversation has no stable originator subject"))
-    (when (shared-conversation? conversation messages)
-      (fail! "SHARED_CONVERSATION_ATTESTATION_UNSUPPORTED" 409
-             "P13B-v1 does not certify shared or Slack conversation attribution"))
     (when-not (= current-user originator)
       (fail! "NATIVE_ATTESTATION_SUBJECT_MISMATCH" 403
              "Current Metabase subject is not the certified query-producing conversation originator"
@@ -239,12 +236,18 @@
               :conversation-originator-id originator}))
     current-user))
 
+(defn- assert-supported-conversation! [conversation messages]
+  (when (shared-conversation? conversation messages)
+    (fail! "SHARED_CONVERSATION_ATTESTATION_UNSUPPORTED" 409
+           "P13B-v1 does not certify shared or Slack conversation attribution")))
+
 (defn- load-occurrence! [conversation-id native-query-id]
   (let [conversation (or (t2/select-one :model/MetabotConversation :id conversation-id)
                          (fail! "NATIVE_QUERY_OCCURRENCE_NOT_FOUND" 404
                                 "Metabot conversation was not found"))
+        subject      (assert-certified-subject! conversation)
         messages     (vec (t2/select :model/MetabotMessage :conversation_id conversation-id))
-        subject      (assert-certified-subject! conversation messages)
+        _            (assert-supported-conversation! conversation messages)
         assistants   (filterv #(= :assistant (:role %)) messages)
         matches      (vec (mapcat #(matching-query-outputs % native-query-id) assistants))]
     (cond

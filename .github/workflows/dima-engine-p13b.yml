@@ -113,3 +113,29 @@ jobs:
             sleep 2
           done
           exit 1
+
+  certification:
+    if: ${{ always() }}
+    needs: [focused, patch-surface, source-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Certify exact P13B-1 candidate gates
+        env:
+          FOCUSED_RESULT: ${{ needs.focused.result }}
+          PATCH_SURFACE_RESULT: ${{ needs.patch-surface.result }}
+          SOURCE_BUILD_RESULT: ${{ needs.source-build.result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### P13B-1 ENGINE CANDIDATE"
+            echo
+            echo "- candidate SHA: `$CANDIDATE_SHA`"
+            echo "- focused: `$FOCUSED_RESULT`"
+            echo "- patch-surface: `$PATCH_SURFACE_RESULT`"
+            echo "- source-build: `$SOURCE_BUILD_RESULT`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$FOCUSED_RESULT" = "success"
+          test "$PATCH_SURFACE_RESULT" = "success"
+          test "$SOURCE_BUILD_RESULT" = "success"
+

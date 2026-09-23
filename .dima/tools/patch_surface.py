@@ -52,8 +52,8 @@ def main() -> int:
     ap.add_argument("--assert-c0", action="store_true")
     ap.add_argument("--sync-conflicts", type=int, default=0)
     ap.add_argument("--manual-conflicts", type=int, default=0)
-    ap.add_argument("--upstream-test-failures", type=int, default=0)
-    ap.add_argument("--dima-test-failures", type=int, default=0)
+    ap.add_argument("--upstream-test-failures", type=int)
+    ap.add_argument("--dima-test-failures", type=int)
     args = ap.parse_args()
 
     base = run("git", "rev-parse", f"{args.base}^{{commit}}")
@@ -125,6 +125,9 @@ def main() -> int:
     args.md_out.parent.mkdir(parents=True, exist_ok=True)
     args.json_out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
+    def measured(value: int | None) -> str:
+        return "NOT_MEASURED" if value is None else str(value)
+
     md = [
         "# DIMA_PATCH_SURFACE",
         "",
@@ -137,8 +140,8 @@ def main() -> int:
         f"- Dima integration line delta: **+{dima_added_loc} / -{dima_deleted_loc}**",
         f"- sync conflicts: **{args.sync_conflicts}**",
         f"- manual conflict interventions: **{args.manual_conflicts}**",
-        f"- upstream test failures: **{args.upstream_test_failures}**",
-        f"- Dima test failures: **{args.dima_test_failures}**",
+        f"- upstream test failures: **{measured(args.upstream_test_failures)}**",
+        f"- Dima test failures: **{measured(args.dima_test_failures)}**",
         "",
         "## Modified pre-existing upstream files",
         "",

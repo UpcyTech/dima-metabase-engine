@@ -97,7 +97,17 @@
            "dima/engine/v1/native-query-attestation"
            {:conversation_id convo-id
             :native_query_id query-id
-            :expected_metric "sales_count"}))))))
+            :expected_metric "sales_count"})))
+      (testing "generic unknown keys are rejected at the raw request boundary"
+        (with-redefs [dima.attestation/runtime-identity (constantly test-runtime)]
+          (mt/user-http-request
+           :rasta
+           :post
+           400
+           "dima/engine/v1/native-query-attestation"
+           {:conversation_id convo-id
+            :native_query_id query-id
+            :unexpected "not-accepted"}))))))
 
 (deftest participant-and-superuser-cannot-use-official-v1-attestation-test
   (mt/test-driver :h2

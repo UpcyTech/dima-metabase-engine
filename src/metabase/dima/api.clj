@@ -4,6 +4,7 @@
   These endpoints expose engine identity and bounded observation of already-produced native
   Metabot queries. They contain no analytical planning or business-semantic authority."
   (:require
+   [metabase.api.common :as api]
    [metabase.api.macros :as api.macros]
    [metabase.dima.native-attestation :as dima.attestation]
    [metabase.util.malli.schema :as ms])
@@ -88,6 +89,18 @@
    [:exact_serialized_pmbql :map]
    [:manifest NativeExecutionManifest]])
 
+(defn- check-no-dropped-entries!
+  "Fail closed when endpoint decoding dropped an undeclared or invalid map entry.
+
+  The pinned v0.63.18 base predates upstream api/check-no-dropped-entries, so this
+  Dima-local compatibility shim preserves that native Metabase helper's exact
+  count-based semantics without modifying a second upstream-owned source file."
+  [raw decoded]
+  (api/check-400
+   (or (not (map? raw))
+       (= (count raw) (count decoded)))
+   "The request contains keys or values this endpoint does not accept."))
+
 (api.macros/defendpoint :get "/engine/v1/identity" :- RuntimeIdentityResponse
   "Return immutable Dima engine build/runtime identity. Contains no business or query logic."
   []
@@ -100,7 +113,9 @@
    body
    :- [:map {:closed true}
        [:conversation_id ms/UUIDString]
-       [:native_query_id ms/NonBlankString]]]
+       [:native_query_id ms/NonBlankString]]
+   request]
+  (check-no-dropped-entries! (:body request) body)
   (let [{:keys [conversation_id native_query_id]} body]
     (dima.attestation/attest-native-query!
      {:conversation_id (UUID/fromString conversation_id)

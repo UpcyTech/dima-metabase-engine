@@ -223,6 +223,32 @@
             (is (= (:exact_pmbql_fingerprint manifest)
                    (dima.attestation/exact-query-fingerprint exact_serialized_pmbql)))))))))
 
+(deftest repeated-attestation-of-one-persisted-occurrence-is-idempotent-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "idempotent-native-q"]
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id
+                        :query-id query-id
+                        :query (june-count-query)
+                        :user-id owner-id})
+        (binding [dima.attestation/*runtime-identity-override* test-runtime]
+          (let [first-attestation
+                (dima.attestation/attest-native-query!
+                 {:conversation_id (java.util.UUID/fromString convo-id)
+                  :native_query_id query-id})
+                second-attestation
+                (dima.attestation/attest-native-query!
+                 {:conversation_id (java.util.UUID/fromString convo-id)
+                  :native_query_id query-id})]
+            (is (= (:exact_serialized_pmbql first-attestation)
+                   (:exact_serialized_pmbql second-attestation)))
+            (is (= (get-in first-attestation [:manifest :exact_pmbql_fingerprint])
+                   (get-in second-attestation [:manifest :exact_pmbql_fingerprint])))
+            (is (= (get-in first-attestation [:manifest :attestation_id])
+                   (get-in second-attestation [:manifest :attestation_id])))))))))
+
 (deftest native-occurrence-must-be-unique-finalized-and-state-consistent-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)]
