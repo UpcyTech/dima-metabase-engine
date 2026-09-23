@@ -466,7 +466,8 @@
         implicit          (implicit-joins preprocessed)
         implicit-ids      (->> implicit (keep implicit-joined-table-id) distinct sort vec)
         aggs              (aggregation-facts query)
-        filters           (filter-facts query)
+        observation-query (qp.desugar/desugar query)
+        filters           (filter-facts observation-query)
         manifest-base     {:native_conversation_id        (str conversation_id)
                            :native_assistant_message_id   (:id message)
                            :native_tool_call_id           tool-call-id
