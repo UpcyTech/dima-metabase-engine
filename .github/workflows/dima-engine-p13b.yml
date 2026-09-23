@@ -11,6 +11,16 @@ on:
       - ".dima/release.json"
       - ".dima/tools/patch_surface.py"
       - ".github/workflows/dima-engine-p13b.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/metabase/dima/**"
+      - "test/metabase/dima/**"
+      - "src/metabase/api_routes/routes.clj"
+      - ".dima/docker/Dockerfile.c0"
+      - ".dima/release.json"
+      - ".dima/tools/patch_surface.py"
+      - ".github/workflows/dima-engine-p13b.yml"
   workflow_dispatch:
 
 permissions:
