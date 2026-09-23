@@ -4,6 +4,7 @@
    [metabase.api.common :as api]
    [metabase.dima.native-attestation :as dima.attestation]
    [metabase.lib.core :as lib]
+   [metabase.lib.filter :as lib.filter]
    [metabase.lib.metadata :as lib.metadata]
    [metabase.lib.test-metadata :as meta]
    [metabase.lib.test-util.macros :as lib.tu.macros]
@@ -58,7 +59,7 @@
         created-at (lib.metadata/field mp (mt/id :orders :created_at))]
     (lib/filter
      (count-star-query)
-     (lib/during created-at "2026-06-01" :month))))
+     (lib.filter/during created-at "2026-06-01" :month))))
 
 (defn- tool-parts
   [{:keys [query-id query call-id producer]
