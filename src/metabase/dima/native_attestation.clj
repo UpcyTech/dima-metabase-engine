@@ -12,6 +12,7 @@
    [metabase.metabot.tools :as metabot.tools]
    [metabase.query-permissions.impl :as query-perms]
    [metabase.query-processor :as qp]
+   [metabase.query-processor.middleware.desugar :as qp.desugar]
    [metabase.query-processor.middleware.permissions :as qp.perms]
    [metabase.query-processor.preprocess :as qp.preprocess]
    [metabase.query-processor.store :as qp.store]
