@@ -6,6 +6,7 @@
   (:require
    [clojure.string :as str]
    [metabase.api.common :as api]
+   [metabase.lib-be.core :as lib-be]
    [metabase.lib.core :as lib]
    [metabase.lib.serialize :as lib.serialize]
    [metabase.metabot.tools :as metabot.tools]
@@ -132,9 +133,14 @@
     (format "%064x" (BigInteger. 1 digest))))
 
 (defn- restore-persisted-query [query]
-  ;; Metabot conversation/message state is stored as JSON. Metabase Lib owns the inverse
-  ;; REST/app-DB boundary and restores serialized enum/keyword forms before inspection.
-  (lib.serialize/prepare-after-deserialization query))
+  ;; Metabot conversation/message state is stored as JSON. Re-enter through Metabase Lib's
+  ;; query constructor with the application-DB metadata provider so Lib owns normalization,
+  ;; field typing, and metadata attachment. This is intentionally not a Dima query parser.
+  (let [database-id (or (:database query) (get query "database"))]
+    (when-not (pos-int? database-id)
+      (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
+             "Persisted native query has no positive database id"))
+    (lib/query (lib-be/application-database-metadata-provider database-id) query)))
 
 (defn exact-serialized-query
   "Metabase REST/app-DB serialization boundary for one exact internal pMBQL query."
