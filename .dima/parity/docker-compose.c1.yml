@@ -64,7 +64,7 @@ services:
       MB_DB_PASS: ${P12X_MB_APP_PASSWORD:-metabase-app-lab}
 
   fork:
-    image: ghcr.io/upcytech/dima-metabase-engine@sha256:674d1ac4a929b95ab476bcdf37baa43099b398c444bc3f53fef404318892554b
+    image: ${DIMA_FORK_IMAGE:-ghcr.io/upcytech/dima-metabase-engine@sha256:674d1ac4a929b95ab476bcdf37baa43099b398c444bc3f53fef404318892554b}
     depends_on:
       fork-app-db: {condition: service_healthy}
       analytics-db: {condition: service_healthy}
