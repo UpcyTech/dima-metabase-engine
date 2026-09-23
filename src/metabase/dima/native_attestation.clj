@@ -8,6 +8,7 @@
    [metabase.api.common :as api]
    [metabase.lib-be.core :as lib-be]
    [metabase.lib.core :as lib]
+   [metabase.lib.metadata :as lib.metadata]
    [metabase.lib.serialize :as lib.serialize]
    [metabase.metabot.tools :as metabot.tools]
    [metabase.query-permissions.impl :as query-perms]
@@ -530,6 +531,7 @@
                            :referenced_source_table_ids   checked-table-ids
                            :aggregation_count             (count aggs)
                            :aggregations                   aggs
+                           :native_metric_references       metric-refs
                            :breakout_count                (breakout-count query)
                            :material_filter_count         (:material_filter_count filters)
                            :non_temporal_filter_count     (:non_temporal_filter_count filters)
