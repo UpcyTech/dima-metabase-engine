@@ -134,6 +134,16 @@
                         (false? (:upper_inclusive %)))
                   predicates))))))
 
+(deftest non-temporal-filter-is-observed-as-material-query-fact-test
+  (mt/test-driver :h2
+    (let [mp       (mt/metadata-provider)
+          quantity (lib.metadata/field mp (mt/id :orders :quantity))
+          query    (lib/filter (count-star-query) (lib/> quantity 1))
+          facts    (#'dima.attestation/filter-facts query)]
+      (is (= 1 (:material_filter_count facts)))
+      (is (= 1 (:non_temporal_filter_count facts)))
+      (is (empty? (:temporal_predicates facts))))))
+
 (deftest explicit-join-count-is-observed-from-lib-test
   (mt/test-driver :h2
     (let [mp         (mt/metadata-provider)
