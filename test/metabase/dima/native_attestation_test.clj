@@ -267,6 +267,44 @@
             (is (= (:exact_pmbql_fingerprint manifest)
                    (dima.attestation/exact-query-fingerprint exact_serialized_pmbql)))))))))
 
+(deftest during-native-occurrence-attests-from-desugared-observation-with-original-identity-test
+  (testing "P13B observes native :during through Metabase desugar while preserving the exact original execution artifact"
+    (mt/test-driver :h2
+      (let [owner-id (mt/user->id :rasta)
+            convo-id (str (random-uuid))
+            query-id "native-during-q"
+            query    (june-during-query)
+            exact    (#'dima.attestation/exact-serialized-query query)
+            expected-fingerprint (dima.attestation/exact-query-fingerprint query)]
+        (mt/with-current-user owner-id
+          (persist-turn! {:conversation-id convo-id
+                          :query-id query-id
+                          :query query
+                          :user-id owner-id})
+          (binding [dima.attestation/*runtime-identity-override* test-runtime]
+            (let [{:keys [exact_serialized_pmbql manifest]}
+                  (dima.attestation/attest-native-query!
+                   {:conversation_id (java.util.UUID/fromString convo-id)
+                    :native_query_id query-id})
+                  predicates (:temporal_predicates manifest)]
+              (is (= exact exact_serialized_pmbql))
+              (is (= expected-fingerprint (:exact_pmbql_fingerprint manifest)))
+              (is (= expected-fingerprint
+                     (dima.attestation/exact-query-fingerprint exact_serialized_pmbql)))
+              (is (= 2 (:material_filter_count manifest)))
+              (is (= 0 (:non_temporal_filter_count manifest)))
+              (is (= 2 (count predicates)))
+              (is (= #{(mt/id :orders :created_at)}
+                     (set (map :time_field_id predicates))))
+              (is (some #(and (= ">=" (:operator %))
+                              (= "2026-06-01" (:lower_bound %))
+                              (true? (:lower_inclusive %)))
+                        predicates))
+              (is (some #(and (= "<" (:operator %))
+                              (= "2026-07-01" (:upper_bound %))
+                              (false? (:upper_inclusive %)))
+                        predicates)))))))))
+
 (deftest repeated-attestation-of-one-persisted-occurrence-is-idempotent-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
