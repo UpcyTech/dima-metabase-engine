@@ -10,7 +10,7 @@ on:
 
 permissions:
   contents: write
-  packages: write
+  packages: read
 
 jobs:
   candidate:
@@ -19,39 +19,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: main
+          fetch-depth: 64
+          fetch-tags: false
 
-      - name: Add/fetch canonical upstream
-        shell: bash
-        run: |
-          set -euo pipefail
-          git remote add upstream https://github.com/metabase/metabase.git 2>/dev/null ||             git remote set-url upstream https://github.com/metabase/metabase.git
-          git fetch upstream --tags --force
-
-      - name: Resolve exact candidate and create sync branch
+      - name: Fetch canonical upstream candidate
         id: resolve
         shell: bash
         env:
           UPSTREAM_REF: ${{ inputs.upstream_ref }}
         run: |
           set -euo pipefail
+          git remote add upstream https://github.com/metabase/metabase.git 2>/dev/null ||             git remote set-url upstream https://github.com/metabase/metabase.git
+          git fetch upstream --tags --force
           candidate_sha="$(git rev-parse "$UPSTREAM_REF^{commit}")"
           safe="$(printf '%s' "$UPSTREAM_REF" | tr '/:@ ' '----' | tr -cd 'A-Za-z0-9._-')"
-          branch="sync/$safe"
           echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-          git switch -C "$branch" origin/main
+          echo "safe=$safe" >> "$GITHUB_OUTPUT"
+          echo "branch=sync/$safe" >> "$GITHUB_OUTPUT"
+          echo "main_before=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Attempt candidate-only upstream integration
+      - name: Integrate candidate locally only
         id: merge
         shell: bash
         env:
-          UPSTREAM_REF: ${{ inputs.upstream_ref }}
           CANDIDATE_SHA: ${{ steps.resolve.outputs.candidate_sha }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
         run: |
+          set -euo pipefail
+          git switch -C "${{ steps.resolve.outputs.branch }}" origin/main
           set +e
-          git -c user.name="dima-sync-bot" -c user.email="dima-sync-bot@users.noreply.github.com"             merge --no-ff --no-commit "$CANDIDATE_SHA"
+          git -c user.name=dima-sync-bot -c user.email=dima-sync-bot@users.noreply.github.com             merge --no-ff --no-commit "$CANDIDATE_SHA"
           rc=$?
+          set -e
           mkdir -p .dima/reports
           if [ "$rc" -ne 0 ]; then
             git diff --name-only --diff-filter=U | sort > .dima/reports/conflicts.txt
@@ -60,47 +60,65 @@ jobs:
           from pathlib import Path
           conflicts=[x for x in Path(".dima/reports/conflicts.txt").read_text().splitlines() if x]
           Path(".dima/reports/sync_report.json").write_text(json.dumps({
-            "status":"CONFLICT",
-            "conflict_count":len(conflicts),
-            "conflicts":conflicts,
-            "manual_promotion":True,
+              "status":"CONFLICT",
+              "conflict_count":len(conflicts),
+              "conflicts":conflicts,
+              "manual_promotion":True,
+              "main_mutated":False,
           },indent=2)+"\n")
           PY
             git merge --abort || true
             exit 1
           fi
-          git -c user.name="dima-sync-bot" -c user.email="dima-sync-bot@users.noreply.github.com"             commit -m "sync(upstream): candidate ${{ inputs.upstream_ref }}"
-          python - <<'PY'
-          import json, os
+
+          if git diff --cached --quiet && git diff --quiet && [ ! -f .git/MERGE_HEAD ]; then
+            status=NOOP_CANDIDATE
+          else
+            git -c user.name=dima-sync-bot -c user.email=dima-sync-bot@users.noreply.github.com               commit -m "sync(upstream): candidate $UPSTREAM_REF"
+            status=MERGED_CANDIDATE
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          python - "$status" "$UPSTREAM_REF" "$CANDIDATE_SHA" <<'PY'
+          import json,sys
           from pathlib import Path
+          status, ref, sha = sys.argv[1:]
           Path(".dima/reports/sync_report.json").write_text(json.dumps({
-            "status":"MERGED_CANDIDATE",
-            "upstream_ref":os.environ.get("UPSTREAM_REF"),
-            "candidate_sha":os.environ.get("CANDIDATE_SHA"),
-            "conflict_count":0,
-            "manual_promotion":True,
+              "status":status,
+              "upstream_ref":ref,
+              "candidate_sha":sha,
+              "conflict_count":0,
+              "manual_promotion":True,
+              "main_mutated":False,
           },indent=2)+"\n")
           PY
-      - name: Generate patch-surface candidate report
-        if: success()
+
+      - name: Generate patch-surface report
         shell: bash
         run: |
-          set -euo pipefail
           python .dima/tools/patch_surface.py             --base "${{ steps.resolve.outputs.candidate_sha }}"             --head HEAD             --json-out .dima/reports/DIMA_PATCH_SURFACE.json             --md-out .dima/reports/DIMA_PATCH_SURFACE.md
 
-      - name: Build candidate image from fork source
-        if: success()
+      - name: Build candidate from source
         shell: bash
         run: |
-          set -euo pipefail
-          docker build             --build-arg MB_EDITION=oss             --build-arg VERSION="sync-${{ inputs.upstream_ref }}"             -t dima-metabase-engine:sync-candidate             .
+          docker build             -f .dima/docker/Dockerfile.c0             --build-arg MB_EDITION=oss             --build-arg VERSION="sync-${{ steps.resolve.outputs.safe }}"             -t dima-metabase-engine:sync-candidate .
 
-      - name: Push candidate branch only after compile/build success
-        if: success()
+      - name: Smoke candidate image
+        shell: bash
+        run: |
+          docker run -d --rm --name dima-sync-smoke -p 127.0.0.1:3309:3000 dima-metabase-engine:sync-candidate
+          trap 'docker logs dima-sync-smoke || true; docker stop dima-sync-smoke || true' EXIT
+          for i in $(seq 1 120); do
+            curl -fsS http://127.0.0.1:3309/api/health | grep -q '"status":"ok"' && exit 0
+            sleep 2
+          done
+          exit 1
+
+      - name: Push candidate branch only
         shell: bash
         run: |
           set -euo pipefail
           git push --force-with-lease origin "HEAD:refs/heads/${{ steps.resolve.outputs.branch }}"
+          test "$(git ls-remote origin refs/heads/main | awk '{print $1}')" = "${{ steps.resolve.outputs.main_before }}"
 
       - name: Upload sync evidence
         if: always()
@@ -113,5 +131,4 @@ jobs:
 
       - name: Explicit no-promotion notice
         if: always()
-        run: |
-          echo "SYNC CANDIDATE ONLY. This workflow never promotes main or production."
+        run: echo "SYNC CANDIDATE ONLY. main/production promotion is manual and separate."
