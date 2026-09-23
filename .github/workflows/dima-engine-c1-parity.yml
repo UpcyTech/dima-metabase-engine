@@ -38,6 +38,7 @@ env:
 jobs:
   parity:
     runs-on: ubuntu-latest
+    environment: DIMA_OPENROUTER_API_KEY
     timeout-minutes: 65
     steps:
       - uses: actions/checkout@v4
