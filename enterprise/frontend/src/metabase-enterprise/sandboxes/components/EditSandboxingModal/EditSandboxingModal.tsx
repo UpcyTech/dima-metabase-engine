@@ -1,0 +1,517 @@
+import cx from "classnames";
+import { useState } from "react";
+import { useAsyncFn } from "react-use";
+import { c, jt, t } from "ttag";
+import _ from "underscore";
+
+import {
+  skipToken,
+  useGetCardQuery,
+  useGetPermissionsGroupQuery,
+  useGetTableQuery,
+  useValidateGroupTableAccessPolicyMutation,
+} from "metabase/api";
+import { ActionButton } from "metabase/common/components/ActionButton";
+import {
+  QuestionPickerModal,
+  getQuestionPickerValue,
+} from "metabase/common/components/Pickers/QuestionPicker";
+import { QuestionLoader } from "metabase/common/components/QuestionLoader";
+import { QuestionName } from "metabase/common/components/QuestionName";
+import { useToggle } from "metabase/common/hooks/use-toggle";
+import { useTranslateContent } from "metabase/content-translation/hooks";
+import CS from "metabase/css/core/index.css";
+import {
+  ActionIcon,
+  Box,
+  Button,
+  Center,
+  Icon,
+  Loader,
+  Menu,
+  Radio,
+  Stack,
+} from "metabase/ui";
+import * as Urls from "metabase/urls";
+import { getName } from "metabase/utils/name";
+import type {
+  GroupTableAccessPolicyDraft,
+  GroupTableAccessPolicyParams,
+} from "metabase-enterprise/sandboxes/types";
+import { getRawDataQuestionForTable } from "metabase-enterprise/sandboxes/utils";
+import * as Lib from "metabase-lib";
+import type {
+  GroupId,
+  GroupTableAccessPolicy,
+  IconName,
+  Table,
+  UserAttributeKey,
+} from "metabase-types/api";
+
+import {
+  AttributeOptionsEmptyState,
+  DataAttributeMappingEditor,
+} from "../AttributeMappingEditor";
+
+import S from "./EditSandboxingModal.module.css";
+
+// eslint-disable-next-line ttag/no-module-declaration -- see metabase#55045
+const ERROR_MESSAGE = t`An error occurred.`;
+
+const getNormalizedPolicy = (
+  policy: GroupTableAccessPolicy | GroupTableAccessPolicyDraft,
+  shouldUseSavedQuestion: boolean,
+): GroupTableAccessPolicy => {
+  return {
+    ...policy,
+    card_id: shouldUseSavedQuestion ? policy.card_id : null,
+    attribute_remappings: _.pick(
+      policy.attribute_remappings,
+      (value, key) => value != null && key != null,
+    ),
+  } as GroupTableAccessPolicy;
+};
+
+const getDraftPolicy = ({
+  tableId,
+  groupId,
+}: GroupTableAccessPolicyParams): GroupTableAccessPolicyDraft => {
+  return {
+    table_id: parseInt(tableId),
+    group_id: parseInt(groupId),
+    card_id: null,
+    attribute_remappings: { "": null },
+  };
+};
+
+const isPolicyValid = (
+  policy: GroupTableAccessPolicy,
+  shouldUseSavedQuestion: boolean,
+) => {
+  if (shouldUseSavedQuestion) {
+    return policy.card_id != null;
+  }
+
+  return Object.entries(policy.attribute_remappings).length > 0;
+};
+
+export interface EditSandboxingModalProps {
+  policy?: GroupTableAccessPolicy;
+  attributes: UserAttributeKey[];
+  params: GroupTableAccessPolicyParams;
+  onCancel: () => void;
+  onSave: (policy: GroupTableAccessPolicy) => void;
+}
+
+const EditSandboxingModal = ({
+  policy: originalPolicy,
+  attributes,
+  params,
+  onCancel,
+  onSave,
+}: EditSandboxingModalProps) => {
+  const [policy, setPolicy] = useState<
+    GroupTableAccessPolicy | GroupTableAccessPolicyDraft
+  >(originalPolicy ?? getDraftPolicy(params));
+  const [shouldUseSavedQuestion, setShouldUseSavedQuestion] = useState(
+    policy.card_id != null,
+  );
+
+  const normalizedPolicy = getNormalizedPolicy(policy, shouldUseSavedQuestion);
+  const isValid = isPolicyValid(normalizedPolicy, shouldUseSavedQuestion);
+
+  const [showPickerModal, { turnOn: showModal, turnOff: hideModal }] =
+    useToggle(false);
+
+  const [validatePolicy] = useValidateGroupTableAccessPolicyMutation();
+
+  const [{ error }, savePolicy] = useAsyncFn(async () => {
+    const shouldValidate = normalizedPolicy.card_id != null;
+    if (shouldValidate) {
+      await validatePolicy(normalizedPolicy).unwrap();
+    }
+    onSave(normalizedPolicy);
+  }, [normalizedPolicy, validatePolicy]);
+
+  const remainingAttributesOptions = attributes.filter(
+    (attribute) => !(attribute in policy.attribute_remappings),
+  );
+
+  const hasAttributesOptions = attributes.length > 0;
+  const hasValidMappings =
+    Object.keys(normalizedPolicy.attribute_remappings || {}).length > 0;
+
+  const canSave =
+    isValid &&
+    (!_.isEqual(originalPolicy, normalizedPolicy) ||
+      normalizedPolicy.id == null);
+
+  const { data: policyCard, isFetching: loadingCard } = useGetCardQuery(
+    policy.card_id != null ? { id: policy.card_id } : skipToken,
+  );
+  const { data: policyTable, isFetching: loadingTabe } = useGetTableQuery(
+    policy.table_id != null ? { id: policy.table_id } : skipToken,
+  );
+
+  const hasSavedQuestionSandboxingFeature = policyTable?.db?.features?.includes(
+    "saved-question-sandboxing",
+  );
+
+  if (loadingCard || loadingTabe) {
+    return (
+      <Center p="2rem">
+        <Loader data-testid="loading-indicator" />
+      </Center>
+    );
+  }
+
+  return (
+    <div>
+      <h2
+        className={CS.p3}
+      >{t`Configure row and column security for this table`}</h2>
+
+      <div>
+        <div className={cx(CS.px3, CS.pb3)}>
+          {hasSavedQuestionSandboxingFeature ? (
+            <div>
+              <div className={CS.pb2}>
+                {t`When the following rules are applied, this group will see a customized version of the table.`}
+              </div>
+              <div className={CS.pb4}>
+                {t`These rules don’t apply to native queries.`}
+              </div>
+              <h4
+                className={CS.pb1}
+              >{t`How do you want to filter this table?`}</h4>
+              <Radio.Group
+                value={shouldUseSavedQuestion ? "saved-question" : "column"}
+                onChange={(value) =>
+                  setShouldUseSavedQuestion(value === "saved-question")
+                }
+              >
+                <Stack gap="sm">
+                  <Radio
+                    value="column"
+                    label={t`Filter by a column in the table`}
+                  />
+                  <Radio
+                    value="saved-question"
+                    label={t`Use a saved question to create a custom view for this table`}
+                  />
+                </Stack>
+              </Radio.Group>
+            </div>
+          ) : (
+            <div>
+              <div className={CS.pb2}>
+                {t`Users in this group will only see rows where the selected column matches their user attribute value.`}
+              </div>
+              <div>{t`This rule doesn't apply to native queries`}</div>
+            </div>
+          )}
+        </div>
+        {shouldUseSavedQuestion && (
+          <div className={cx(CS.px3, CS.pb3)}>
+            <div className={CS.pb2}>
+              {t`Pick a saved question that returns the custom view of this table that these users should see.`}
+            </div>
+            <Box pos="relative">
+              <Button
+                data-testid="custom-view-picker-button"
+                onClick={showModal}
+                fullWidth
+                rightSection={policyCard ? undefined : <Icon name="ellipsis" />}
+                classNames={{
+                  root: S.policyCardButton,
+                  inner: S.policyCardButtonInner,
+                  label: policyCard ? S.policyCardLabel : undefined,
+                }}
+              >
+                {policyCard?.name ?? t`Select a question`}
+              </Button>
+              {policyCard && (
+                <Menu position="bottom-end">
+                  <Menu.Target>
+                    <ActionIcon
+                      aria-label={t`Question options`}
+                      className={S.optionsButton}
+                    >
+                      <Icon name="ellipsis" />
+                    </ActionIcon>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    <Menu.Item
+                      component="a"
+                      href={Urls.card(policyCard)}
+                      target="_blank"
+                      rel="noreferrer"
+                      leftSection={<Icon name="external" />}
+                    >
+                      {t`Go to question`}
+                    </Menu.Item>
+                    <Menu.Item
+                      onClick={showModal}
+                      leftSection={<Icon name="refresh" />}
+                    >
+                      {t`Replace`}
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
+              )}
+            </Box>
+            {showPickerModal && (
+              <QuestionPickerModal
+                value={
+                  policyCard && policy.card_id != null
+                    ? getQuestionPickerValue(policyCard)
+                    : undefined
+                }
+                onChange={(newCard) => {
+                  setPolicy({ ...policy, card_id: newCard.id });
+                  hideModal();
+                }}
+                onClose={hideModal}
+                models={["card", "dataset"]}
+                namespaces={[null]}
+                options={{
+                  hasLibrary: false,
+                  hasRootCollection: true,
+                  hasPersonalCollections: true,
+                  hasConfirmButtons: true,
+                }}
+              />
+            )}
+          </div>
+        )}
+        {(!shouldUseSavedQuestion || policy.card_id != null) &&
+          (hasAttributesOptions || hasValidMappings ? (
+            <div className={cx(CS.p3, CS.borderTop, CS.borderBottom)}>
+              {shouldUseSavedQuestion && (
+                <div className={CS.pb2}>
+                  {t`You can optionally add additional filters here based on user attributes. These filters will be applied on top of any filters that are already in this saved question.`}
+                </div>
+              )}
+              <DataAttributeMappingEditor
+                value={policy.attribute_remappings}
+                policyTable={policyTable}
+                onChange={(attribute_remappings) =>
+                  setPolicy({ ...policy, attribute_remappings })
+                }
+                shouldUseSavedQuestion={shouldUseSavedQuestion}
+                policy={policy}
+                attributesOptions={remainingAttributesOptions}
+              />
+            </div>
+          ) : (
+            <div className={CS.px3}>
+              <AttributeOptionsEmptyState
+                title={
+                  shouldUseSavedQuestion
+                    ? t`To add additional filters, your users need to have some attributes`
+                    : t`For this option to work, your users need to have some attributes`
+                }
+              />
+            </div>
+          ))}
+      </div>
+
+      <div className={CS.p3}>
+        {isValid && (
+          <div className={CS.pb1}>
+            <PolicySummary
+              policy={normalizedPolicy}
+              policyTable={policyTable}
+            />
+          </div>
+        )}
+
+        <div className={cx(CS.flex, CS.alignCenter, CS.justifyEnd)}>
+          <Button onClick={onCancel}>{t`Cancel`}</Button>
+          <ActionButton
+            className={CS.ml1}
+            actionFn={savePolicy}
+            variant="filled"
+            disabled={!canSave}
+          >
+            {t`Save`}
+          </ActionButton>
+        </div>
+        {error && (
+          <div className={cx(CS.flex, CS.alignCenter, CS.my2, CS.textError)}>
+            {typeof error === "string"
+              ? error
+              : // @ts-expect-error provide correct type for error
+                (error.data.message ?? ERROR_MESSAGE)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// eslint-disable-next-line import/no-default-export -- deprecated usage
+export default EditSandboxingModal;
+
+interface SummaryRowProps {
+  icon: IconName;
+  content: React.ReactNode;
+}
+
+const SummaryRow = ({ icon, content }: SummaryRowProps) => (
+  <div className={cx(CS.flex, CS.alignCenter)}>
+    <Icon className={CS.p1} name={icon} />
+    <span>{content}</span>
+  </div>
+);
+
+const PermissionsGroupName = ({ groupId }: { groupId: GroupId }) => {
+  const { data: group } = useGetPermissionsGroupQuery(groupId);
+  return group ? <span>{group.name}</span> : null;
+};
+
+interface PolicySummaryProps {
+  policy: GroupTableAccessPolicy;
+  policyTable: Table | undefined;
+}
+
+const PolicySummary = ({ policy, policyTable }: PolicySummaryProps) => {
+  const tc = useTranslateContent();
+  const headingId = _.uniqueId();
+  return (
+    <div aria-labelledby={headingId}>
+      <div
+        id={headingId}
+        className={cx(CS.px1, CS.pb2, CS.textUppercase, CS.textSmall)}
+      >
+        {t`Summary`}
+      </div>
+      <SummaryRow
+        icon="group"
+        content={jt`Users in ${(
+          <strong key="group-name">
+            <PermissionsGroupName groupId={policy.group_id} />
+          </strong>
+        )} can view`}
+      />
+      <SummaryRow
+        icon="table"
+        content={
+          policy.card_id
+            ? jt`rows in the ${(
+                <strong key="question-name">
+                  <QuestionName id={policy.card_id} />
+                </strong>
+              )} question`
+            : jt`rows in the ${(
+                <strong key="table-name">{tc(getName(policyTable))}</strong>
+              )} table`
+        }
+      />
+      {Object.entries(policy.attribute_remappings).map(
+        ([attribute, target], index) => (
+          <SummaryRow
+            key={attribute}
+            icon="funnel_outline"
+            content={
+              index === 0
+                ? jt`where ${(
+                    <TargetName
+                      key="target"
+                      policy={policy}
+                      policyTable={policyTable}
+                      target={target}
+                    />
+                  )} equals ${(
+                    <span key="attr" className={CS.textCode}>
+                      {attribute}
+                    </span>
+                  )}`
+                : jt`and ${(
+                    <TargetName
+                      key="target"
+                      policy={policy}
+                      policyTable={policyTable}
+                      target={target}
+                    />
+                  )} equals ${(
+                    <span key="attr" className={CS.textCode}>
+                      {attribute}
+                    </span>
+                  )}`
+            }
+          />
+        ),
+      )}
+    </div>
+  );
+};
+
+interface TargetNameProps {
+  policy: GroupTableAccessPolicy;
+  policyTable: Table | undefined;
+  target: any[];
+}
+
+const TargetName = ({ policy, policyTable, target }: TargetNameProps) => {
+  if (Array.isArray(target)) {
+    if (
+      (target[0] === "variable" || target[0] === "dimension") &&
+      target[1][0] === "template-tag"
+    ) {
+      return (
+        <span>
+          {c(
+            "{0} is a name of a variable being used by row and column security",
+          ).jt`${<strong key="strong">{target[1][1]}</strong>} variable`}
+        </span>
+      );
+    } else if (target[0] === "dimension") {
+      const fieldRef = target[1];
+
+      return (
+        <QuestionLoader
+          questionHash={undefined}
+          questionId={policy.card_id}
+          questionObject={
+            policy.card_id == null && policyTable
+              ? getRawDataQuestionForTable(policyTable)
+              : null
+          }
+          includeSensitiveFields
+        >
+          {({ question }) => {
+            if (!question) {
+              return null;
+            }
+
+            const query = question.query();
+            const stageIndex = -1;
+            const columns = Lib.visibleColumns(query, stageIndex);
+            const [index] = Lib.findColumnIndexesFromLegacyRefs(
+              query,
+              stageIndex,
+              columns,
+              [fieldRef],
+            );
+            const column = columns[index];
+            if (!column) {
+              return null;
+            }
+
+            const columnInfo = Lib.displayInfo(query, stageIndex, column);
+            return (
+              <span>
+                {c(
+                  "{0} is a name of a field being used by row and column security",
+                )
+                  .jt`${<strong key="strong">{columnInfo.displayName}</strong>} field`}
+              </span>
+            );
+          }}
+        </QuestionLoader>
+      );
+    }
+  }
+  return <strong>[{t`Unknown target`}]</strong>;
+};

@@ -1,0 +1,24 @@
+.root {
+  background-color: var(--mb-color-background_page-primary);
+  border: 1px solid var(--mb-color-border-neutral);
+  border-radius: var(--mantine-radius-md);
+}
+
+.card .label {
+  font-weight: bold;
+  cursor: pointer;
+  padding-left: 0.75rem;
+
+  &:hover {
+    color: var(--mb-color-core-brand);
+  }
+}
+
+.card .description {
+  font-size: 14px;
+  padding-left: 0.75rem;
+}
+
+.cardTitle {
+  font-weight: bold;
+}

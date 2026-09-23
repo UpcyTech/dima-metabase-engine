@@ -1,0 +1,281 @@
+(ns metabase-enterprise.cloud-add-ons.api-test
+  (:require
+   [clj-http.client :as http]
+   [clojure.test :refer :all]
+   [metabase-enterprise.harbormaster.client :as hm.client]
+   [metabase-enterprise.semantic-search.test-util :as semantic.tu]
+   [metabase.premium-features.core :as premium-features]
+   [metabase.test :as mt]))
+
+(deftest ^:sequential post-product-type-test
+  (testing "POST /api/ee/cloud-add-ons/metabase-ai"
+    (testing "requires superuser"
+      (mt/with-premium-features #{}
+        (is (=? "You don't have permissions to do that."
+                (mt/user-http-request :rasta :post 403 "ee/cloud-add-ons/metabase-ai"
+                                      {:terms_of_service true})))))
+    (testing "requires accepting terms of service"
+      (mt/with-premium-features #{:hosting}
+        (is (=? {:errors {:terms_of_service "Need to accept terms of service."}}
+                (mt/user-http-request :crowberto :post 400 "ee/cloud-add-ons/metabase-ai"
+                                      {:terms_of_service false})))))
+    (testing "requires token feature 'hosting'"
+      (mt/with-premium-features #{}
+        (is (=? "Can only access Store API for Metabase Cloud instances."
+                (mt/user-http-request :crowberto :post 400 "ee/cloud-add-ons/metabase-ai"
+                                      {:terms_of_service true})))))
+    (testing "when all conditions are met"
+      (mt/with-premium-features #{:hosting :audit-app}
+        (doseq [[status-code error-message] {404 "Could not establish a connection to Metabase Cloud."
+                                             403 "Could not establish a connection to Metabase Cloud."
+                                             401 "Could not establish a connection to Metabase Cloud."
+                                             400 "Could not purchase this add-on."}]
+          (testing (format "passes through HTTP status %d from Store API" status-code)
+            (mt/with-dynamic-fn-redefs [hm.client/call (fn [& _] (throw (ex-info "TEST" {:status status-code})))]
+              (is (=? error-message
+                      (mt/user-http-request :crowberto :post status-code "ee/cloud-add-ons/metabase-ai"
+                                            {:terms_of_service true}))))))
+        (testing "responds with HTTP status 500 for other errors from Store API"
+          (mt/with-dynamic-fn-redefs [hm.client/call (fn [& _] (throw (ex-info "TEST" {})))]
+            (is (=? "Unexpected error"
+                    (mt/user-http-request :crowberto :post 500 "ee/cloud-add-ons/metabase-ai"
+                                          {:terms_of_service true})))))
+        (testing "succeeds"
+          (let [{store-api-proxy :proxy store-api-calls :calls} (semantic.tu/spy (constantly nil))
+                {clear-token-cache-proxy :proxy clear-token-cache-calls :calls} (semantic.tu/spy premium-features/clear-cache!)]
+            (with-redefs [hm.client/call                store-api-proxy
+                          premium-features/clear-cache! clear-token-cache-proxy]
+              (is (=? {}
+                      (mt/user-http-request :crowberto :post 200 "ee/cloud-add-ons/metabase-ai"
+                                            {:terms_of_service true})))
+              (is (not-empty @store-api-calls)
+                  "Store API was called")
+              (is (not-empty @clear-token-cache-calls)
+                  "Token cache was cleared")
+              (testing "audit log entry generated"
+                (let [{:keys [details user_id]} (mt/latest-audit-log-entry "cloud-add-on-purchase")]
+                  (is (= (mt/user->id :crowberto) user_id))
+                  (is (= {:add-on {:product-type "metabase-ai"}} details)))))))))))
+
+(deftest ^:sequential post-transforms-test
+  (doseq [[product-type feature] [["python-execution"            :transforms-python]
+                                  ["transforms"                  :transforms-basic]
+                                  ["transforms-basic"            :transforms-basic]
+                                  ["transforms-basic-metered"    :transforms-basic]
+                                  ["transforms-advanced"         :transforms-python]
+                                  ["transforms-advanced-metered" :transforms-python]]]
+    (testing (str "POST /api/ee/cloud-add-ons/" product-type)
+      (testing "requires superuser"
+        (mt/with-premium-features #{}
+          (is (=? "You don't have permissions to do that."
+                  (mt/user-http-request :rasta :post 403 (str "ee/cloud-add-ons/" product-type) {})))))
+      (testing "requires token feature 'hosting'"
+        (mt/with-premium-features #{}
+          (is (=? "Can only access Store API for Metabase Cloud instances."
+                  (mt/user-http-request :crowberto :post 400 (str "ee/cloud-add-ons/" product-type) {})))))
+      (testing (str "not eligible if already has '" (name feature) "'")
+        (mt/with-premium-features #{:hosting feature}
+          (is (=? "Can only purchase add-ons for eligible subscriptions."
+                  (mt/user-http-request :crowberto :post 400 (str "ee/cloud-add-ons/" product-type) {})))))
+      (testing "succeeds when all conditions are met"
+        (mt/with-premium-features #{:hosting}
+          (with-redefs [hm.client/call (constantly nil)]
+            (is (=? {}
+                    (mt/user-http-request :crowberto :post 200 (str "ee/cloud-add-ons/" product-type) {})))))))))
+
+(deftest ^:sequential post-dwh-rent-test
+  (testing "POST /api/ee/cloud-add-ons/dwh-rent"
+    (testing "requires superuser"
+      (mt/with-premium-features #{}
+        (is (=? "You don't have permissions to do that."
+                (mt/user-http-request :rasta :post 403 "ee/cloud-add-ons/dwh-rent" {})))))
+    (testing "requires token feature 'hosting'"
+      (mt/with-premium-features #{}
+        (is (=? "Can only access Store API for Metabase Cloud instances."
+                (mt/user-http-request :crowberto :post 400 "ee/cloud-add-ons/dwh-rent" {})))))
+    (testing "not eligible if storage is already attached"
+      (mt/with-premium-features #{:hosting :attached-dwh}
+        (is (=? "Can only purchase add-ons for eligible subscriptions."
+                (mt/user-http-request :crowberto :post 400 "ee/cloud-add-ons/dwh-rent" {})))))
+    (testing "rejects an explicit quantity for the bundled product type"
+      (mt/with-premium-features #{:hosting}
+        (is (=? {:errors {:quantity "This add-on does not support a quantity."}}
+                (mt/user-http-request :crowberto :post 400 "ee/cloud-add-ons/dwh-rent" {:quantity 2})))))
+    (testing "succeeds, provisioning dwh-rent and etl-connections together"
+      (mt/with-premium-features #{:hosting :audit-app}
+        (let [{store-api-proxy :proxy store-api-calls :calls} (semantic.tu/spy (constantly nil))
+              {clear-token-cache-proxy :proxy clear-token-cache-calls :calls} (semantic.tu/spy premium-features/clear-cache!)]
+          (with-redefs [hm.client/call                store-api-proxy
+                        premium-features/clear-cache! clear-token-cache-proxy]
+            (is (=? {}
+                    (mt/user-http-request :crowberto :post 200 "ee/cloud-add-ons/dwh-rent" {})))
+            (is (= [{:args [:change-add-ons
+                            :upsert-add-ons
+                            [{:product-type "dwh-rent" :prepaid-units 0}
+                             {:product-type "etl-connections" :prepaid-units 1}]]
+                     :ret  nil}]
+                   @store-api-calls))
+            (is (not-empty @clear-token-cache-calls)
+                "Token cache was cleared")
+            (testing "audit log records both provisioned add-ons"
+              (let [{:keys [details user_id]} (mt/latest-audit-log-entry "cloud-add-on-purchase")]
+                (is (= (mt/user->id :crowberto) user_id))
+                (is (= {:add-on [{:product-type "dwh-rent" :prepaid-units 0}
+                                 {:product-type "etl-connections" :prepaid-units 1}]}
+                       details))))))))))
+
+(deftest ^:sequential post-etl-connections-test
+  (testing "POST /api/ee/cloud-add-ons/etl-connections"
+    (testing "requires superuser"
+      (mt/with-premium-features #{}
+        (is (=? "You don't have permissions to do that."
+                (mt/user-http-request :rasta :post 403 "ee/cloud-add-ons/etl-connections" {})))))
+    (testing "is rejected as a bundle-only product type without calling the Store"
+      (mt/with-premium-features #{:hosting}
+        (let [{store-api-proxy :proxy store-api-calls :calls} (semantic.tu/spy (constantly nil))]
+          (with-redefs [hm.client/call store-api-proxy]
+            (is (=? "This add-on can only be purchased as part of a bundle."
+                    (mt/user-http-request :crowberto :post 400 "ee/cloud-add-ons/etl-connections" {})))
+            (is (empty? @store-api-calls)
+                "Store API was not called")))))))
+
+(deftest ^:sequential delete-product-type-test
+  (testing "DELETE /api/ee/cloud-add-ons/metabase-ai-managed"
+    (testing "requires superuser"
+      (mt/with-premium-features #{}
+        (is (=? "You don't have permissions to do that."
+                (mt/user-http-request :rasta :delete 403 "ee/cloud-add-ons/metabase-ai-managed")))))
+    (testing "requires token feature 'hosting'"
+      (mt/with-premium-features #{}
+        (is (=? "Can only access Store API for Metabase Cloud instances."
+                (mt/user-http-request :crowberto :delete 400 "ee/cloud-add-ons/metabase-ai-managed")))))
+    (testing "when conditions are met"
+      (mt/with-premium-features #{:hosting}
+        (doseq [[status-code error-message] {404 "Could not establish a connection to Metabase Cloud."
+                                             403 "Could not establish a connection to Metabase Cloud."
+                                             401 "Could not establish a connection to Metabase Cloud."
+                                             400 "Could not remove this add-on."}]
+          (testing (format "passes through HTTP status %d from Store API" status-code)
+            (mt/with-dynamic-fn-redefs [hm.client/call (fn [& _] (throw (ex-info "TEST" {:status status-code})))]
+              (is (=? error-message
+                      (mt/user-http-request :crowberto :delete status-code "ee/cloud-add-ons/metabase-ai-managed"))))))
+        (testing "responds with HTTP status 500 for other errors from Store API"
+          (mt/with-dynamic-fn-redefs [hm.client/call (fn [& _] (throw (ex-info "TEST" {})))]
+            (is (=? "Unexpected error"
+                    (mt/user-http-request :crowberto :delete 500 "ee/cloud-add-ons/metabase-ai-managed")))))
+        (testing "succeeds"
+          (let [{store-api-proxy :proxy store-api-calls :calls} (semantic.tu/spy (constantly nil))
+                {clear-token-cache-proxy :proxy clear-token-cache-calls :calls} (semantic.tu/spy premium-features/clear-cache!)]
+            (with-redefs [hm.client/call                store-api-proxy
+                          premium-features/clear-cache! clear-token-cache-proxy]
+              (is (=? {}
+                      (mt/user-http-request :crowberto :delete 200 "ee/cloud-add-ons/metabase-ai-managed")))
+              (is (= [{:args [:change-add-ons
+                              :remove-add-ons
+                              [{:product-type "metabase-ai-managed"}]]
+                       :ret  nil}]
+                     @store-api-calls))
+              (is (not-empty @clear-token-cache-calls)
+                  "Token cache was cleared"))))))))
+
+(deftest ^:sequential delete-dwh-rent-test
+  (testing "DELETE /api/ee/cloud-add-ons/dwh-rent"
+    (testing "requires superuser"
+      (mt/with-premium-features #{}
+        (is (=? "You don't have permissions to do that."
+                (mt/user-http-request :rasta :delete 403 "ee/cloud-add-ons/dwh-rent")))))
+    (testing "requires token feature 'hosting'"
+      (mt/with-premium-features #{}
+        (is (=? "Can only access Store API for Metabase Cloud instances."
+                (mt/user-http-request :crowberto :delete 400 "ee/cloud-add-ons/dwh-rent")))))
+    (testing "succeeds, removing dwh-rent and etl-connections together"
+      (mt/with-premium-features #{:hosting}
+        (let [{store-api-proxy :proxy store-api-calls :calls} (semantic.tu/spy (constantly nil))
+              {clear-token-cache-proxy :proxy clear-token-cache-calls :calls} (semantic.tu/spy premium-features/clear-cache!)]
+          (with-redefs [hm.client/call                store-api-proxy
+                        premium-features/clear-cache! clear-token-cache-proxy]
+            (is (=? {}
+                    (mt/user-http-request :crowberto :delete 200 "ee/cloud-add-ons/dwh-rent")))
+            (is (= [{:args [:change-add-ons
+                            :remove-add-ons
+                            [{:product-type "dwh-rent"}
+                             {:product-type "etl-connections"}]]
+                     :ret  nil}]
+                   @store-api-calls))
+            (is (not-empty @clear-token-cache-calls)
+                "Token cache was cleared")))))))
+
+(deftest ^:sequential delete-etl-connections-test
+  (testing "DELETE /api/ee/cloud-add-ons/etl-connections"
+    (testing "requires superuser"
+      (mt/with-premium-features #{}
+        (is (=? "You don't have permissions to do that."
+                (mt/user-http-request :rasta :delete 403 "ee/cloud-add-ons/etl-connections")))))
+    (testing "is rejected as a bundle-only product type without calling the Store"
+      (mt/with-premium-features #{:hosting}
+        (let [{store-api-proxy :proxy store-api-calls :calls} (semantic.tu/spy (constantly nil))]
+          (with-redefs [hm.client/call store-api-proxy]
+            (is (=? "This add-on can only be purchased as part of a bundle."
+                    (mt/user-http-request :crowberto :delete 400 "ee/cloud-add-ons/etl-connections")))
+            (is (empty? @store-api-calls)
+                "Store API was not called")))))))
+
+(deftest ^:sequential get-plans-test
+  (testing "GET /api/ee/cloud-add-ons/plans"
+    (testing "requires superuser"
+      (mt/with-premium-features #{}
+        (is (=? "You don't have permissions to do that."
+                (mt/user-http-request :rasta :get 403 "ee/cloud-add-ons/plans")))))
+    (testing "requires token feature 'hosting'"
+      (mt/with-premium-features #{}
+        (is (=? "Can only access Store API for Metabase Cloud instances."
+                (mt/user-http-request :crowberto :get 400 "ee/cloud-add-ons/plans")))))
+    (testing "when conditions are met"
+      (mt/with-premium-features #{:hosting}
+        (testing "passes through HTTP status from Store API"
+          (doseq [[status-code error-message] {404 "Could not establish a connection to Metabase Cloud."
+                                               403 "Could not establish a connection to Metabase Cloud."
+                                               401 "Could not establish a connection to Metabase Cloud."}]
+            (testing (format "error status %d" status-code)
+              (with-redefs [http/get (fn [& _] (throw (ex-info "TEST" {:status status-code})))]
+                (is (=? error-message
+                        (mt/user-http-request :crowberto :get status-code "ee/cloud-add-ons/plans")))))))
+        (testing "responds with HTTP status 500 for other errors"
+          (with-redefs [http/get (fn [& _] (throw (ex-info "TEST" {:status 500})))]
+            (is (=? "Unexpected error"
+                    (mt/user-http-request :crowberto :get 500 "ee/cloud-add-ons/plans")))))
+        (testing "succeeds"
+          (let [plan-data {:body {:plan-name "Pro" :tier "premium"}}]
+            (with-redefs [http/get (fn [& _] plan-data)]
+              (is (=? (:body plan-data)
+                      (mt/user-http-request :crowberto :get 200 "ee/cloud-add-ons/plans"))))))))))
+
+(deftest ^:sequential get-addons-test
+  (testing "GET /api/ee/cloud-add-ons/addons"
+    (testing "requires superuser"
+      (mt/with-premium-features #{}
+        (is (=? "You don't have permissions to do that."
+                (mt/user-http-request :rasta :get 403 "ee/cloud-add-ons/addons")))))
+    (testing "requires token feature 'hosting'"
+      (mt/with-premium-features #{}
+        (is (=? "Can only access Store API for Metabase Cloud instances."
+                (mt/user-http-request :crowberto :get 400 "ee/cloud-add-ons/addons")))))
+    (testing "when conditions are met"
+      (mt/with-premium-features #{:hosting}
+        (testing "passes through HTTP status from Store API"
+          (doseq [[status-code error-message] {404 "Could not establish a connection to Metabase Cloud."
+                                               403 "Could not establish a connection to Metabase Cloud."
+                                               401 "Could not establish a connection to Metabase Cloud."}]
+            (testing (format "error status %d" status-code)
+              (with-redefs [http/get (fn [& _] (throw (ex-info "TEST" {:status status-code})))]
+                (is (=? error-message
+                        (mt/user-http-request :crowberto :get status-code "ee/cloud-add-ons/addons")))))))
+        (testing "responds with HTTP status 500 for other errors"
+          (with-redefs [http/get (fn [& _] (throw (ex-info "TEST" {:status 500})))]
+            (is (=? "Unexpected error"
+                    (mt/user-http-request :crowberto :get 500 "ee/cloud-add-ons/addons")))))
+        (testing "succeeds"
+          (let [addons-data {:body [{:addon-id "metabase-ai" :status "active"}]}]
+            (with-redefs [http/get (fn [& _] addons-data)]
+              (is (=? (:body addons-data)
+                      (mt/user-http-request :crowberto :get 200 "ee/cloud-add-ons/addons"))))))))))

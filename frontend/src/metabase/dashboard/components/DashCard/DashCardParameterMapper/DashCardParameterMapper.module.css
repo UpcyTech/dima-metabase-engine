@@ -1,0 +1,86 @@
+.MapperSettingsContainer {
+  z-index: 1;
+  overflow: auto;
+}
+
+.TextCardDefault {
+  color: var(--mb-color-text-primary);
+  margin: 0.5rem 0;
+  align-items: baseline;
+  line-height: 1.5rem;
+}
+
+.InfoIcon {
+  flex-shrink: 0;
+}
+
+.CardLabel {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.Header {
+  color: var(--mb-color-text-secondary);
+}
+
+.TargetButton {
+  background-color: var(--mb-color-background_page-primary);
+  cursor: pointer;
+  border: 2px solid var(--mb-color-core-brand);
+  border-radius: 8px;
+  min-height: 30px;
+  color: var(--mb-color-text-secondary);
+
+  &.disabled {
+    opacity: 0.4;
+    border-color: inherit;
+  }
+
+  &.mapped {
+    border-color: var(--mb-color-core-brand);
+    background-color: var(--mb-color-core-brand);
+    color: var(--mb-color-text-primary-inverse);
+  }
+
+  &.unauthed {
+    pointer-events: none;
+    border-color: var(--mb-color-background_page-secondary);
+    background-color: var(--mb-color-background_page-secondary);
+    color: var(--mb-color-text-secondary);
+  }
+
+  &.invalid {
+    border-color: var(--mb-color-feedback-negative);
+    background-color: var(--mb-color-feedback-negative);
+    color: var(--mb-color-text-primary-inverse);
+  }
+}
+
+.TargetButtonText {
+  overflow: hidden;
+}
+
+.CloseIconButton[data-variant="subtle"] {
+  color: var(--mb-color-text-primary-inverse);
+
+  &:hover {
+    color: var(--mb-color-text-primary-inverse);
+    background-color: color-mix(
+      in srgb,
+      var(--mb-color-background_page-primary),
+      transparent 80%
+    );
+  }
+}
+
+.KeyIcon {
+  flex: 1;
+}
+
+.Warning {
+  margin-top: 0.5rem;
+  margin-bottom: -0.5rem;
+  padding: 2rem 0;
+  text-align: center;
+}

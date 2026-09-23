@@ -1,0 +1,365 @@
+import { useRegisterActions } from "kbar";
+import { useCallback, useMemo } from "react";
+import type { WithRouterProps } from "react-router";
+import { push } from "react-router-redux";
+import { useLatest } from "react-use";
+import { t } from "ttag";
+
+import { skipToken, useSearchQuery } from "metabase/api";
+import { useInitialCollectionId } from "metabase/common/collections/hooks";
+import { trackMetricCreateStarted } from "metabase/common/data-studio/analytics";
+import { canAccessDataStudio } from "metabase/common/data-studio/selectors";
+import { useDatabaseListQuery } from "metabase/common/hooks";
+import { useDispatch, useSelector } from "metabase/redux";
+import { openDiagnostics } from "metabase/redux/app";
+import type { ModalName } from "metabase/redux/store/modal";
+import {
+  closeModal,
+  setOpenModal,
+  setOpenModalWithProps,
+} from "metabase/redux/ui";
+import { getHasDatabaseWithActionsEnabled } from "metabase/selectors/data";
+import {
+  canUserCreateNativeQueries,
+  canUserCreateQueries,
+  getUserIsAdmin,
+  getUserPersonalCollectionId,
+} from "metabase/selectors/user";
+import { useColorScheme } from "metabase/ui";
+import * as Urls from "metabase/urls";
+
+import {
+  type RegisterShortcutProps,
+  useRegisterShortcut,
+} from "./useRegisterShortcut";
+
+/**
+ * Default ordering for the basic actions. kbar ranks matches by search
+ * relevance; we use this order only to break ties between equally-relevant
+ * matches (e.g. typing "New" matches every "New …" action equally) to keep
+ * them in stable order.
+ */
+export const BASIC_ACTION_ORDER = [
+  "create-new-question",
+  "create-new-native-query",
+  "create-new-dashboard",
+  "create-new-document",
+  "create-new-collection",
+  "create-new-model",
+  "create-new-metric",
+  "download-diagnostics",
+  "navigate-admin-settings",
+  "navigate-embed-js",
+  "navigate-personal-collection",
+  "navigate-user-settings",
+  "navigate-trash",
+  "navigate-home",
+  "navigate-data-studio",
+  "navigate-browse-model",
+  "navigate-browse-database",
+  "navigate-browse-metric",
+];
+
+// Small enough that it only orders actions whose relevance scores are equal,
+// without ever overriding a meaningfully better match.
+const PRIORITY_EPSILON = 0.0001;
+
+const getActionPriority = (id: string) => {
+  const index = BASIC_ACTION_ORDER.indexOf(id);
+  return index === -1
+    ? 0
+    : (BASIC_ACTION_ORDER.length - index) * PRIORITY_EPSILON;
+};
+
+export const useCommandPaletteBasicActions = ({
+  isLoggedIn,
+  ...props
+}: WithRouterProps & { isLoggedIn: boolean }) => {
+  const dispatch = useDispatch();
+  const collectionId = useInitialCollectionId(props) ?? undefined;
+
+  const { data: databases = [] } = useDatabaseListQuery({
+    enabled: isLoggedIn,
+  });
+  const { data: searchResults } = useSearchQuery(
+    isLoggedIn
+      ? { models: ["dataset"], limit: 1, context: "basic-actions" }
+      : skipToken,
+  );
+  const hasModels = (searchResults?.data?.length ?? 0) > 0;
+
+  const personalCollectionId = useSelector(getUserPersonalCollectionId);
+  const isAdmin = useSelector(getUserIsAdmin);
+  const hasDataStudioAccess = useSelector(canAccessDataStudio);
+
+  const hasDataAccess = useSelector(canUserCreateQueries);
+  const hasNativeWrite = useSelector(canUserCreateNativeQueries);
+  const hasDatabaseWithActionsEnabled =
+    getHasDatabaseWithActionsEnabled(databases);
+
+  const openNewModal = useCallback(
+    (modalId: ModalName) => {
+      dispatch(closeModal());
+      dispatch(setOpenModal(modalId));
+    },
+    [dispatch],
+  );
+  const openNewModalWithProps = useCallback(
+    (payload: Parameters<typeof setOpenModalWithProps>[0]) => {
+      dispatch(closeModal());
+      dispatch(setOpenModalWithProps(payload));
+    },
+    [dispatch],
+  );
+
+  const initialActions = useMemo<RegisterShortcutProps[]>(() => {
+    const actions: RegisterShortcutProps[] = [];
+
+    if (hasDataAccess) {
+      actions.push({
+        id: "create-new-question",
+        name: t`New question`,
+        section: "basic",
+        icon: "insight",
+        perform: () => {
+          dispatch(closeModal());
+          dispatch(
+            push(
+              Urls.newQuestion({
+                mode: "notebook",
+                creationType: "custom_question",
+                cardType: "question",
+                collectionId,
+              }),
+            ),
+          );
+        },
+      });
+    }
+
+    if (hasNativeWrite) {
+      actions.push({
+        id: "create-new-native-query",
+        name: t`New SQL query`,
+        section: "basic",
+        icon: "sql",
+        perform: () => {
+          dispatch(closeModal());
+          dispatch(
+            push(
+              Urls.newQuestion({
+                DEPRECATED_RAW_MBQL_type: "native",
+                creationType: "native_question",
+                cardType: "question",
+              }),
+            ),
+          );
+        },
+      });
+    }
+
+    actions.push({
+      id: "create-new-dashboard",
+      name: t`New dashboard`,
+      section: "basic",
+      icon: "dashboard",
+      perform: () => {
+        openNewModal("dashboard");
+      },
+    });
+
+    actions.push({
+      id: "create-new-document",
+      name: t`New document`,
+      section: "basic",
+      icon: "document",
+      perform: () => {
+        dispatch(push(Urls.newDocument()));
+      },
+    });
+
+    actions.push({
+      id: "create-new-collection",
+      name: t`New collection`,
+      section: "basic",
+      icon: "collection",
+      perform: () => {
+        openNewModal("collection");
+      },
+    });
+
+    if (hasNativeWrite) {
+      actions.push({
+        id: "create-new-model",
+        name: t`New model`,
+        section: "basic",
+        icon: "model",
+        perform: () => {
+          dispatch(closeModal());
+          dispatch(push("model/new"));
+        },
+      });
+    }
+
+    if (hasDataAccess) {
+      actions.push({
+        id: "create-new-metric",
+        name: t`New metric`,
+        section: "basic",
+        icon: "metric",
+        perform: () => {
+          trackMetricCreateStarted("command_palette");
+          dispatch(closeModal());
+          dispatch(push(Urls.newMetric({ collectionId })));
+        },
+      });
+    }
+
+    actions.push({
+      id: "download-diagnostics",
+      name: t`Download diagnostics`,
+      section: "basic",
+      icon: "bug",
+      keywords: "bug, issue, problem, error, diagnostic",
+      shortcut: ["$mod+f1"],
+      perform: () => {
+        dispatch(openDiagnostics());
+      },
+    });
+
+    if (isAdmin) {
+      actions.push({
+        id: "navigate-admin-settings",
+        perform: () => dispatch(push("/admin/settings")),
+      });
+    }
+
+    if (isAdmin) {
+      actions.push({
+        id: "navigate-embed-js",
+        section: "basic",
+        icon: "embed",
+        keywords: "embed flow, embed js, modular embedding, guest embed",
+        perform: () =>
+          openNewModalWithProps({
+            id: "embed",
+            props: null,
+          }),
+      });
+    }
+
+    if (personalCollectionId) {
+      actions.push({
+        id: "navigate-personal-collection",
+        perform: () => dispatch(push(`/collection/${personalCollectionId}`)),
+      });
+    }
+
+    actions.push(
+      {
+        id: "navigate-user-settings",
+        section: "basic",
+        icon: "person",
+        perform: () => dispatch(push("/account/profile")),
+      },
+      {
+        id: "navigate-trash",
+        perform: () => dispatch(push("/trash")),
+      },
+      {
+        id: "navigate-home",
+        section: "basic",
+        icon: "home",
+        perform: () => dispatch(push("/")),
+      },
+    );
+
+    if (hasDataStudioAccess) {
+      actions.push({
+        id: "navigate-data-studio",
+        section: "basic",
+        icon: "table",
+        perform: () => dispatch(push("/data-studio")),
+      });
+    }
+
+    const browseActions: RegisterShortcutProps[] = [
+      {
+        id: "navigate-browse-model",
+        name: t`Browse models`,
+        section: "basic",
+        icon: "model",
+        perform: () => {
+          dispatch(push("/browse/models"));
+        },
+      },
+      {
+        id: "navigate-browse-database",
+        name: t`Browse databases`,
+        section: "basic",
+        icon: "database",
+        perform: () => {
+          dispatch(push("/browse/databases"));
+        },
+      },
+      {
+        id: "navigate-browse-metric",
+        name: t`Browse metrics`,
+        section: "basic",
+        icon: "metric",
+        perform: () => {
+          dispatch(push("/browse/metrics"));
+        },
+      },
+    ];
+
+    return [...actions, ...browseActions].map((action) => ({
+      ...action,
+      priority: getActionPriority(action.id),
+    }));
+  }, [
+    dispatch,
+    hasDataAccess,
+    hasDataStudioAccess,
+    hasNativeWrite,
+    collectionId,
+    openNewModal,
+    openNewModalWithProps,
+    isAdmin,
+    personalCollectionId,
+  ]);
+
+  useRegisterShortcut(initialActions, [initialActions]);
+
+  const openActionModal = [];
+
+  if (hasDatabaseWithActionsEnabled && hasNativeWrite && hasModels) {
+    openActionModal.push({
+      id: "create-action",
+      name: t`New action`,
+      keywords: t`add action, create action`,
+      section: "basic",
+      icon: "bolt",
+      perform: () => {
+        openNewModal("action");
+      },
+    });
+  }
+  useRegisterActions(openActionModal, [
+    hasDatabaseWithActionsEnabled,
+    hasNativeWrite,
+    hasModels,
+  ]);
+
+  const colorSchemeRef = useLatest(useColorScheme());
+  useRegisterShortcut([
+    {
+      id: "toggle-dark-mode",
+      perform: () => colorSchemeRef.current.toggleColorScheme(),
+    },
+    {
+      id: "toggle-dark-mode-2",
+      perform: () => colorSchemeRef.current.toggleColorScheme(),
+    },
+  ]);
+};

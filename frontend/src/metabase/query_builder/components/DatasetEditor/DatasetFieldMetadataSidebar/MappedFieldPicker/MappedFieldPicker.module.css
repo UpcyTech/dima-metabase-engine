@@ -1,0 +1,15 @@
+.StyledSelectButton {
+  &.hasValue {
+    background-color: var(--mb-color-core-brand);
+    border-color: var(--mb-color-core-brand);
+
+    .StyledSelectIcon {
+      color: var(--mb-color-text-primary-inverse);
+    }
+
+    /* this class is needed because of high specificity of SelectButton.Content */
+    .StyledSelectButtonContent {
+      color: var(--mb-color-text-primary-inverse);
+    }
+  }
+}

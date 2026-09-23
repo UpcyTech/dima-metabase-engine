@@ -1,0 +1,473 @@
+(ns metabase.dashboards.models.dashboard-card-test
+  (:require
+   [clojure.test :refer :all]
+   [honey.sql :as sql]
+   [metabase.dashboards.models.dashboard :as dashboard]
+   [metabase.dashboards.models.dashboard-card :as dashboard-card]
+   [metabase.models.serialization :as serdes]
+   [metabase.queries.models.card-test :as card-test]
+   [metabase.test :as mt]
+   [metabase.util :as u]
+   [metabase.util.json :as json]
+   [toucan2.core :as t2]))
+
+(set! *warn-on-reflection* true)
+
+(defn remove-ids-and-timestamps [m]
+  (let [f (fn [v]
+            (cond
+              (map? v) (remove-ids-and-timestamps v)
+              (coll? v) (mapv remove-ids-and-timestamps v)
+              :else v))]
+    (into {} (for [[k v] m]
+               (when-not (or (= :id k)
+                             (.endsWith (name k) "_id")
+                             (= :created_at k)
+                             (= :updated_at k)
+                             (= :card_schema k))
+                 [k (f v)])))))
+
+(deftest ^:parallel retrieve-dashboard-card-test
+  (testing "retrieve-dashboard-card basic dashcard (no additional series)"
+    (mt/with-temp [:model/Dashboard     {dashboard-id :id} {}
+                   :model/Card          {card-id :id}      {}
+                   :model/DashboardCard {dashcard-id :id}  {:dashboard_id dashboard-id
+                                                            :card_id card-id
+                                                            :parameter_mappings [{:parameter_id "wow"
+                                                                                  :target       [:dimension [:template-tag "id"]]}]}]
+      (is (=? {:size_x                 4
+               :size_y                 4
+               :col                    0
+               :row                    0
+               :parameter_mappings     [{:parameter_id "wow"}]
+               :inline_parameters      []
+               :visualization_settings {}
+               :series                 []}
+              (dashboard-card/retrieve-dashboard-card dashcard-id))))))
+
+(deftest ^:parallel retrieve-dashboard-card-with-additional-series-test
+  (testing "retrieve-dashboard-card dashcard w/ additional series"
+    (mt/with-temp [:model/Dashboard           {dashboard-id :id} {}
+                   :model/Card                {card-id :id} {}
+                   :model/Card                {series-id-1 :id} {:name "Additional Series Card 1"}
+                   :model/Card                {series-id-2 :id} {:name "Additional Series Card 2"}
+                   :model/DashboardCard       {dashcard-id :id} {:dashboard_id dashboard-id :card_id card-id}
+                   :model/DashboardCardSeries _                 {:dashboardcard_id dashcard-id :card_id series-id-1 :position 0}
+                   :model/DashboardCardSeries _                 {:dashboardcard_id dashcard-id :card_id series-id-2 :position 1}]
+      (is (= {:size_x                 4
+              :size_y                 4
+              :col                    0
+              :row                    0
+              :parameter_mappings     []
+              :inline_parameters      []
+              :visualization_settings {}
+              :series                 [{:name                   "Additional Series Card 1"
+                                        :description            nil
+                                        :display                :table
+                                        :type                   :question
+                                        :dataset_query          {}
+                                        :visualization_settings {}}
+                                       {:name                   "Additional Series Card 2"
+                                        :description            nil
+                                        :display                :table
+                                        :type                   :question
+                                        :dataset_query          {}
+                                        :visualization_settings {}}]}
+             (remove-ids-and-timestamps (dashboard-card/retrieve-dashboard-card dashcard-id)))))))
+
+(deftest ^:parallel dashcard->multi-card-test
+  (testing "Check that the multi-cards are returned"
+    (mt/with-temp [:model/Card                card1 {}
+                   :model/Card                card2 {}
+                   :model/Dashboard           dashboard {}
+                   :model/DashboardCard       dc-1 {:dashboard_id (u/the-id dashboard) :card_id (u/the-id card1)}
+                   :model/DashboardCard       _    {:dashboard_id (u/the-id dashboard) :card_id (u/the-id card2)}
+                   :model/DashboardCardSeries _    {:dashboardcard_id (u/the-id dc-1) :card_id (u/the-id card2)}]
+      (testing "get multi-cards"
+        (is (= 1 (count (dashboard-card/dashcard->multi-cards dc-1))))))))
+
+(deftest update-dashboard-card-series!-test
+  (mt/with-temp [:model/Dashboard     {dashboard-id :id} {:name       "Test Dashboard"
+                                                          :creator_id (mt/user->id :rasta)}
+                 :model/Card          {card-id :id} {}
+                 :model/DashboardCard {dashcard-id :id} {:dashboard_id dashboard-id, :card_id card-id}
+                 :model/Card          {card-id-1 :id} {:name "card1"}
+                 :model/Card          {card-id-2 :id} {:name "card2"}
+                 :model/Card          {card-id3 :id} {:name "card3"}]
+    (let [upd-series (fn [series]
+                       (dashboard-card/update-dashboard-cards-series! {dashcard-id series})
+                       (set (for [card-id (t2/select-fn-set :card_id :model/DashboardCardSeries, :dashboardcard_id dashcard-id)]
+                              (t2/select-one-fn :name :model/Card, :id card-id))))]
+      (is (= #{}
+             (upd-series [])))
+      (is (= #{"card1"}
+             (upd-series [card-id-1])))
+      (is (= #{"card2"}
+             (upd-series [card-id-2])))
+      (is (= #{"card1" "card2"}
+             (upd-series [card-id-2 card-id-1])))
+      (is (= #{"card3" "card1"}
+             (upd-series [card-id-1 card-id3]))))))
+
+(deftest create-dashboard-card!-test
+  (testing "create-dashboard-card! simple example with a single card"
+    (mt/with-temp [:model/Dashboard {dashboard-id :id} {}
+                   :model/Card      {card-id :id} {:name "Test Card"}]
+      (let [dashboard-card (first (dashboard-card/create-dashboard-cards!
+                                   [{:dashboard_id           dashboard-id
+                                     :card_id                card-id
+                                     :size_x                 4
+                                     :size_y                 3
+                                     :row                    1
+                                     :col                    1
+                                     :parameter_mappings     [{:parameter_id "bird", :target [:dimension [:template-tag "nest"]]}]
+                                     :inline_parameters      []
+                                     :visualization_settings {}
+                                     :series                 [card-id]}]))]
+        (testing "return value from function"
+          (is (=? {:size_x                 4
+                   :size_y                 3
+                   :col                    1
+                   :row                    1
+                   :parameter_mappings     [{:parameter_id "bird"}]
+                   :inline_parameters      []
+                   :visualization_settings {}
+                   :series                 [{:name                   "Test Card"
+                                             :description            nil
+                                             :display                :table
+                                             :type                   :question
+                                             :dataset_query          {}
+                                             :visualization_settings {}}]}
+                  dashboard-card)))
+        (testing "validate db captured everything"
+          (is (=? {:size_x                 4
+                   :size_y                 3
+                   :col                    1
+                   :row                    1
+                   :parameter_mappings     [{:parameter_id "bird"}]
+                   :inline_parameters      []
+                   :visualization_settings {}
+                   :series                 [{:name                   "Test Card"
+                                             :description            nil
+                                             :display                :table
+                                             :type                   :question
+                                             :dataset_query          {}
+                                             :visualization_settings {}}]}
+                  (dashboard-card/retrieve-dashboard-card (:id dashboard-card)))))))))
+
+(deftest update-dashboard-card!-test
+  (testing (str "update-dashboard-card! basic update. We are testing multiple things here: 1. ability to update all "
+                "the normal attributes for size/position 2. ability to update series and ensure proper ordering 3. "
+                "ensure the card_id cannot be changed 4. ensure the dashboard_id cannot be changed")
+    (mt/with-temp [:model/Dashboard     {dashboard-id :id} {}
+                   :model/Card          {card-id :id} {}
+                   :model/DashboardCard {dashcard-id :id
+                                         :as dashboard-card} {:dashboard_id       dashboard-id
+                                                              :card_id            card-id
+                                                              :parameter_mappings [{:parameter_id "x"
+                                                                                    :target       [:dimension [:template-tag "x"]]}]}
+                   :model/Card          {card-id-1 :id}   {:name "Test Card 1"}
+                   :model/Card          {card-id-2 :id}   {:name "Test Card 2"}]
+      (testing "unmodified dashcard"
+        (is (=? {:size_x                 4
+                 :size_y                 4
+                 :col                    0
+                 :row                    0
+                 :parameter_mappings     [{:parameter_id "x"}]
+                 :inline_parameters      []
+                 :visualization_settings {}
+                 :series                 []}
+                (dashboard-card/retrieve-dashboard-card dashcard-id))))
+      (testing "return value from the update call should be nil"
+        (is (nil? (dashboard-card/update-dashboard-card!
+                   {:id                     dashcard-id
+                    :actor_id               (mt/user->id :rasta)
+                    :dashboard_id           nil
+                    :card_id                nil
+                    :size_x                 5
+                    :size_y                 3
+                    :row                    1
+                    :col                    1
+                    :parameter_mappings     [{:parameter_id "y", :target [:dimension [:template-tag "y"]]}]
+                    :inline_parameters      []
+                    :visualization_settings {}
+                    :series                 [card-id-2 card-id-1]}
+                   dashboard-card))))
+      (testing "validate db captured everything"
+        (is (=? {:size_x                 5
+                 :size_y                 3
+                 :col                    1
+                 :row                    1
+                 :parameter_mappings     [{:parameter_id "y", :target [:dimension [:template-tag "y"]]}]
+                 :inline_parameters      []
+                 :visualization_settings {}
+                 :series                 [{:name                   "Test Card 2"
+                                           :description            nil
+                                           :display                :table
+                                           :type                   :question
+                                           :dataset_query          {}
+                                           :visualization_settings {}}
+                                          {:name                   "Test Card 1"
+                                           :description            nil
+                                           :display                :table
+                                           :type                   :question
+                                           :dataset_query          {}
+                                           :visualization_settings {}}]}
+                (dashboard-card/retrieve-dashboard-card dashcard-id)))))))
+
+(deftest update-dashboard-card!-call-count-test
+  (testing "This tracks the call count of update-dashcards! for the purpose of optimizing the
+    PUT /api/dashboard/:id/cards handler"
+    (mt/with-temp [:model/Dashboard     {dashboard-id :id :as dashboard} {}
+                   :model/Card          {card-id :id} {}
+                   :model/DashboardCard dashcard-1 {:dashboard_id dashboard-id :card_id card-id}
+                   :model/DashboardCard dashcard-2 {:dashboard_id dashboard-id :card_id card-id}
+                   :model/DashboardCard dashcard-3 {:dashboard_id dashboard-id :card_id card-id}
+                   :model/Card          {series-id-1 :id} {:name "Series Card 1"}
+                   :model/Card          {series-id-2 :id} {:name "Series Card 2"}]
+      (let [dashboard (t2/hydrate dashboard [:dashcards :series :card])]
+        (testing "Should have fewer DB calls if there are no changes to the dashcards"
+          (t2/with-call-count [call-count]
+            (dashboard/update-dashcards! dashboard [dashcard-1 dashcard-2 dashcard-3])
+            (is (= 1 (call-count)))))
+        (testing "Should have more calls if there are changes to the dashcards"
+          (t2/with-call-count [call-count]
+            (dashboard/update-dashcards! dashboard [{:id     (:id dashcard-1)
+                                                     :cardId card-id
+                                                     :row    1
+                                                     :col    2
+                                                     :size_x 3
+                                                     :size_y 4
+                                                     :series [{:id series-id-1}]}
+                                                    {:id     (:id dashcard-2)
+                                                     :cardId card-id
+                                                     :row    1
+                                                     :col    2
+                                                     :size_x 3
+                                                     :size_y 4
+                                                     :series [{:id series-id-2}]}
+                                                    {:id     (:id dashcard-3)
+                                                     :cardId card-id
+                                                     :row    1
+                                                     :col    2
+                                                     :size_x 3
+                                                     :size_y 4
+                                                     :series []}])
+            ;; this is usually 10, but it can be 11 sometimes in CI for some reason
+            (is (contains? #{10 11} (call-count)))))))))
+
+(deftest ^:parallel normalize-parameter-mappings-test
+  (testing "DashboardCard parameter mappings should get normalized when coming out of the DB"
+    (mt/with-temp [:model/Dashboard     dashboard {:parameters [{:name "Venue ID"
+                                                                 :slug "venue_id"
+                                                                 :id   "22486e00"
+                                                                 :type "id"}]}
+                   :model/Card          card      {}
+                   :model/DashboardCard dashcard  {:dashboard_id       (u/the-id dashboard)
+                                                   :card_id            (u/the-id card)
+                                                   :parameter_mappings [{:parameter_id "22486e00"
+                                                                         :card_id      (u/the-id card)
+                                                                         :target       [:dimension [:field-id (mt/id :venues :id)]]}]}]
+      (is (= [{:parameter_id "22486e00"
+               :card_id      (u/the-id card)
+               :target       [:dimension [:field (mt/id :venues :id) nil]]}]
+             (t2/select-one-fn :parameter_mappings :model/DashboardCard :id (u/the-id dashcard)))))))
+
+(deftest ^:parallel normalize-visualization-settings-test
+  (testing "DashboardCard visualization settings should get normalized to use modern MBQL syntax"
+    (mt/with-temp [:model/Card      card      {}
+                   :model/Dashboard dashboard {}]
+      (card-test/test-visualization-settings-normalization
+       (fn [original expected]
+         (mt/with-temp [:model/DashboardCard dashcard {:dashboard_id           (u/the-id dashboard)
+                                                       :card_id                (u/the-id card)
+                                                       :visualization_settings original}]
+           (is (= expected
+                  (t2/select-one-fn :visualization_settings :model/DashboardCard :id (u/the-id dashcard))))))))))
+
+(deftest ^:parallel identity-hash-test
+  (testing "Dashboard card hashes are composed of the card hash, dashboard hash, and visualization settings"
+    (let [now #t "2022-09-01T12:34:56Z"]
+      (mt/with-temp [:model/Collection    c1       {:name "top level" :location "/" :created_at now}
+                     :model/Dashboard     dash     {:name "my dashboard"  :collection_id (:id c1) :created_at now}
+                     :model/Card          card     {:name "some question" :collection_id (:id c1) :created_at now}
+                     :model/DashboardCard dashcard {:card_id                (:id card)
+                                                    :dashboard_id           (:id dash)
+                                                    :visualization_settings {}
+                                                    :row                    6
+                                                    :col                    3
+                                                    :created_at             now}]
+        (is (= "1311d6dc"
+               (serdes/raw-hash [(serdes/identity-hash card) (serdes/identity-hash dash) {} 6 3 (:created_at dashcard)])
+               (serdes/identity-hash dashcard)))))))
+
+(deftest ^:parallel from-decoded-json-test
+  (testing "Dashboard Cards should remain the same if they are serialized to JSON,
+    deserialized, and finally transformed with `from-parsed-json`."
+    (mt/with-temp [:model/Dashboard     dash     {:name "my dashboard"}
+                   :model/Card          card     {:name "some question"}
+                   :model/DashboardCard dashcard {:card_id (:id card)
+                                                  :dashboard_id (:id dash)
+                                                  :visualization_settings {:click_behavior {:type         "link",
+                                                                                            :linkType     "url",
+                                                                                            :linkTemplate "/dashboard/1?year={{column:Year}}"}}
+                                                  :parameter_mappings     [{:card_id (:id card)
+                                                                            :parameter_id "-1419866742"
+                                                                            :target [:dimension [:field 1 nil]]}]
+                                                  :row                    4
+                                                  :col                    3}]
+      ;; NOTE: we need to remove `:created_at` and `:updated_at` because they are not
+      ;; transformed by `from-parsed-json`
+      (let [dashcard     (dissoc (t2/select-one :model/DashboardCard :id (u/the-id dashcard))
+                                 :created_at :updated_at)
+            serialized   (json/encode dashcard)
+            deserialized (json/decode+kw serialized)
+            transformed  (dashboard-card/from-parsed-json deserialized)]
+        (is (= dashcard
+               transformed))))))
+
+(deftest ^:parallel visualizer-settings-no-extra-keys-test
+  (testing "visualization_settings.visualization.settings persists exactly as written (VIZ-905)"
+    (mt/with-temp [:model/Dashboard     dash {}
+                   :model/Card          card {}
+                   :model/DashboardCard dashcard {:dashboard_id (:id dash)
+                                                  :card_id      (:id card)
+                                                  :visualization_settings
+                                                  {:visualization {:display              "line"
+                                                                   :columnValuesMapping  {}
+                                                                   :settings             {"graph.dimensions" ["A"]
+                                                                                          "graph.metrics"    ["B"]}}}}]
+      (is (= {:graph.dimensions ["A"] :graph.metrics ["B"]}
+             (-> (t2/select-one :model/DashboardCard :id (:id dashcard))
+                 :visualization_settings :visualization :settings))))))
+
+(deftest ^:parallel after-select-tolerates-dangling-visualizer-ref-test
+  (testing "A DashboardCard whose visualizer settings reference a deleted Card is returned unmodified on read,
+           rather than throwing and making the dashcard unloadable."
+    (mt/with-temp [:model/Dashboard     dash {}
+                   :model/Card          card {}
+                   :model/DashboardCard dc   {:dashboard_id (:id dash), :card_id (:id card)}]
+      (let [dangling {:visualization {:columnValuesMapping {:COLUMN_1 [{:sourceId "card:gEnfWx10SmfjiccZpcGrj"}]}}}]
+        ;; Inject the dangling ref via raw SQL so model hooks don't rewrite it on write.
+        (t2/query-one {:update (t2/table-name :model/DashboardCard)
+                       :set    {:visualization_settings (json/encode dangling)}
+                       :where  [:= :id (:id dc)]})
+        (testing "the read does not throw and the unresolved ref is left untouched"
+          (let [loaded (t2/select-one :model/DashboardCard :id (:id dc))]
+            (is (= [{:sourceId "card:gEnfWx10SmfjiccZpcGrj"}]
+                   (get-in loaded [:visualization_settings :visualization :columnValuesMapping :COLUMN_1])))))))))
+
+(deftest ^:parallel after-select-resolves-valid-visualizer-ref-test
+  (testing "A valid visualizer entity-id reference is resolved to a numeric card id on read."
+    (mt/with-temp [:model/Dashboard     dash {}
+                   :model/Card          card {}
+                   :model/Card          src  {}
+                   :model/DashboardCard dc   {:dashboard_id (:id dash), :card_id (:id card)}]
+      (let [viz {:visualization {:columnValuesMapping {:COLUMN_1 [{:sourceId (str "card:" (:entity_id src))}]}}}]
+        (t2/query-one {:update (t2/table-name :model/DashboardCard)
+                       :set    {:visualization_settings (json/encode viz)}
+                       :where  [:= :id (:id dc)]})
+        (let [loaded (t2/select-one :model/DashboardCard :id (:id dc))]
+          (is (= [{:sourceId (str "card:" (:id src))}]
+                 (get-in loaded [:visualization_settings :visualization :columnValuesMapping :COLUMN_1]))))))))
+
+(deftest ^:parallel link-card-info-query-for-model-requires-integer-id-test
+  (testing "a link-card entity id is spliced into the :where clause, so a non-integer"
+    (testing "must be rejected before it reaches the app DB"
+      (doseq [[label bad-id] {"a {:raw ...} map"      {:raw "1); DROP TABLE t; --"}
+                              "a raw SQL string"      "1 OR 1=1"
+                              "a honeysql op vector"  [:raw "1=1"]
+                              "a set with a bad id"   #{1 {:raw "x"}}
+                              "nil"                    nil}]
+        (testing label
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo
+               #"Link card entity id must be an integer"
+               (dashboard-card/link-card-info-query-for-model "card" bad-id)))))))
+  (testing "legitimate integer ids still build a parameterized query (no literal splicing)"
+    (testing "a single id"
+      (let [[sql & params] (sql/format (dashboard-card/link-card-info-query-for-model "card" 42))]
+        (is (re-find #"WHERE id = \?" sql))
+        (is (= [42] params))))
+    (testing "a set of ids (the batched hydration path)"
+      (let [[sql & params] (sql/format (dashboard-card/link-card-info-query-for-model "card" #{1 2 3}))]
+        (is (re-find #"WHERE id IN \(\?, \?, \?\)" sql))
+        (is (= #{1 2 3} (set params)))))))
+
+(deftest link-card-entity-id-validated-on-write-test
+  (testing "a link-card entity id must be an integer before it is stored, and a legitimate id round-trips"
+    (mt/with-temp [:model/Dashboard {dash-id :id} {}]
+      (testing "a map id is rejected on insert"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"must be an integer"
+             (t2/insert! :model/DashboardCard
+                         {:dashboard_id dash-id :row 0 :col 0 :size_x 4 :size_y 4
+                          :visualization_settings
+                          {:virtual_card {:display "link"}
+                           :link {:entity {:id {:raw "x"} :model "card"}}}}))))
+      (testing "the dashboard is still readable afterwards"
+        (is (=? {:id dash-id} (mt/user-http-request :crowberto :get 200 (str "dashboard/" dash-id)))))
+      (testing "a map id is rejected on update too, not just insert"
+        (let [dc (t2/insert-returning-instance! :model/DashboardCard
+                                                {:dashboard_id dash-id :row 0 :col 0 :size_x 4 :size_y 4
+                                                 :visualization_settings {}})]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"must be an integer"
+               (t2/update! :model/DashboardCard (:id dc)
+                           {:visualization_settings
+                            {:link {:entity {:id {:raw "x"} :model "card"}}}})))))
+      (testing "a legitimate integer id still works"
+        (mt/with-temp [:model/Card {card-id :id} {}]
+          (is (some? (t2/insert! :model/DashboardCard
+                                 {:dashboard_id dash-id :row 0 :col 0 :size_x 4 :size_y 4
+                                  :visualization_settings
+                                  {:link {:entity {:id card-id :model "card"}}}}))))))))
+
+(deftest click-behavior-target-id-validated-on-write-test
+  (testing "a click-behavior target id must be an integer before it is stored, and a legitimate id round-trips"
+    (mt/with-temp [:model/Dashboard {dash-id :id} {}]
+      (testing "a map target id is rejected on insert"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"must be an integer"
+             (t2/insert! :model/DashboardCard
+                         {:dashboard_id dash-id :row 0 :col 0 :size_x 4 :size_y 4
+                          :visualization_settings
+                          {:click_behavior {:type "link" :linkType "question" :targetId {:raw "x"}}}}))))
+      (testing "a map target id in column settings is rejected on insert"
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"must be an integer"
+             (t2/insert! :model/DashboardCard
+                         {:dashboard_id dash-id :row 0 :col 0 :size_x 4 :size_y 4
+                          :visualization_settings
+                          {:column_settings
+                           {"[\"name\",\"abc\"]"
+                            {:click_behavior {:type "link" :linkType "dashboard" :targetId {:raw "x"}}}}}}))))
+      (testing "a map target id is rejected on update too, not just insert"
+        (let [dc (t2/insert-returning-instance! :model/DashboardCard
+                                                {:dashboard_id dash-id :row 0 :col 0 :size_x 4 :size_y 4
+                                                 :visualization_settings {}})]
+          (is (thrown-with-msg?
+               clojure.lang.ExceptionInfo #"must be an integer"
+               (t2/update! :model/DashboardCard (:id dc)
+                           {:visualization_settings
+                            {:click_behavior {:type "link" :linkType "question" :targetId {:raw "x"}}}})))))
+      (testing "a legitimate integer target id still works"
+        (mt/with-temp [:model/Card {card-id :id} {}]
+          (is (some? (t2/insert! :model/DashboardCard
+                                 {:dashboard_id dash-id :row 0 :col 0 :size_x 4 :size_y 4
+                                  :visualization_settings
+                                  {:click_behavior {:type "link" :linkType "question" :targetId card-id}
+                                   :column_settings
+                                   {"[\"name\",\"abc\"]"
+                                    {:click_behavior {:type "link" :linkType "question" :targetId card-id}}}}}))))))))
+
+(deftest ^:parallel link-card-id-compiles-as-query-parameter-test
+  (testing "a non-integer id is rejected when building the link-card query"
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"must be an integer"
+         (dashboard-card/link-card-info-query-for-model "card" {:raw "x"}))))
+  (testing "single-id and collection forms both pass a legitimate id as a bind parameter"
+    (doseq [ids [42 #{42} [42]]]
+      (let [[query & params] (sql/format (dashboard-card/link-card-info-query-for-model "card" ids))]
+        (is (re-find #"\?" query) "the id appears as a bind parameter")
+        (is (= [42] params))))))

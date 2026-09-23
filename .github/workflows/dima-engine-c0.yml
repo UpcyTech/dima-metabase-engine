@@ -1,0 +1,94 @@
+name: dima-engine-c0
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".dima/docker/**"
+      - ".dima/tools/patch_surface.py"
+      - ".dima/release.json"
+      - ".github/workflows/dima-engine-c0.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  DIMA_UPSTREAM_BASE_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
+  DIMA_ENGINE_VERSION: 0.63.18-dima.0
+  DIMA_IMAGE: ghcr.io/upcytech/dima-metabase-engine
+
+jobs:
+  c0-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 64
+          fetch-tags: false
+
+      - name: Verify exact base ancestry and immutable base branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 --no-tags origin refs/heads/upstream/base-v0.63.18:refs/remotes/origin/upstream/base-v0.63.18
+          git merge-base --is-ancestor "$DIMA_UPSTREAM_BASE_SHA" HEAD
+          test "$(git rev-parse refs/remotes/origin/upstream/base-v0.63.18^{commit})" = "$DIMA_UPSTREAM_BASE_SHA"
+
+      - name: Generate C0 patch surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .dima/reports
+          python .dima/tools/patch_surface.py             --base "$DIMA_UPSTREAM_BASE_SHA"             --head HEAD             --json-out .dima/reports/DIMA_PATCH_SURFACE.json             --md-out .dima/reports/DIMA_PATCH_SURFACE.md             --assert-c0
+
+      - name: Build fork source with upstream Dockerfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            -f .dima/docker/Dockerfile.c0 \
+            --build-arg MB_EDITION=oss \
+            --build-arg VERSION="$DIMA_ENGINE_VERSION" \
+            -t "$DIMA_IMAGE:$DIMA_ENGINE_VERSION" \
+            .
+
+      - name: Smoke boot fork-built image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name dima-engine-c0 -p 127.0.0.1:3309:3000 "$DIMA_IMAGE:$DIMA_ENGINE_VERSION"
+          trap 'docker logs dima-engine-c0 || true; docker stop dima-engine-c0 || true' EXIT
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3309/api/health | grep -q '"status":"ok"'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Authenticate GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push immutable C0 candidate image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$DIMA_IMAGE:$DIMA_ENGINE_VERSION"
+          docker image inspect "$DIMA_IMAGE:$DIMA_ENGINE_VERSION" > .dima/reports/image_inspect.json
+
+      - name: Upload C0 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dima-engine-c0-${{ github.sha }}
+          path: .dima/reports/
+          if-no-files-found: error
+          retention-days: 30

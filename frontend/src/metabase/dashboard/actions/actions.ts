@@ -1,0 +1,103 @@
+import {
+  getActionErrorMessage,
+  getActionExecutionMessage,
+} from "metabase/actions/utils";
+import { actionApi, publicApi } from "metabase/api";
+import { runRtkEndpoint } from "metabase/api/utils/run-rtk-endpoint";
+import { SIDEBAR_NAME } from "metabase/dashboard/constants";
+import type { Dispatch } from "metabase/redux/store";
+import { addUndo } from "metabase/redux/undo";
+import { getDashboardType } from "metabase/utils/dashboard";
+import type {
+  ActionDashboardCard,
+  ActionFormSubmitResult,
+  Dashboard,
+  ParametersForActionExecution,
+  WritebackAction,
+} from "metabase-types/api";
+
+import { closeSidebar, setSidebar } from "./ui";
+
+export type ExecuteRowActionPayload = {
+  dashboard: Dashboard;
+  dashcard: ActionDashboardCard;
+  parameters: ParametersForActionExecution;
+  dispatch: Dispatch;
+  shouldToast?: boolean;
+};
+
+export const executeRowAction = async ({
+  dashboard,
+  dashcard,
+  parameters,
+  dispatch,
+  shouldToast = true,
+}: ExecuteRowActionPayload): Promise<ActionFormSubmitResult> => {
+  const executeActionRequest = {
+    dashboardId: dashboard.id,
+    dashcardId: dashcard.id,
+    modelId: dashcard.card_id,
+    parameters,
+  };
+
+  try {
+    const result =
+      getDashboardType(dashboard.id) === "public"
+        ? await runRtkEndpoint(
+            executeActionRequest,
+            dispatch,
+            publicApi.endpoints.executePublicDashcardAction,
+          )
+        : await runRtkEndpoint(
+            executeActionRequest,
+            dispatch,
+            actionApi.endpoints.executeDashcardAction,
+          );
+
+    const message = getActionExecutionMessage(
+      dashcard.action as WritebackAction,
+      result,
+    );
+
+    if (shouldToast) {
+      dispatch(
+        addUndo({
+          toastColor: "feedback-positive",
+          message,
+        }),
+      );
+    }
+
+    return { success: true, message };
+  } catch (error) {
+    const message = getActionErrorMessage(error);
+
+    if (shouldToast) {
+      dispatch(
+        addUndo({
+          icon: "warning",
+          toastColor: "feedback-negative",
+          message,
+        }),
+      );
+    }
+
+    return { success: false, error, message };
+  }
+};
+
+export const setEditingDashcardId =
+  (dashcardId: number | null) => (dispatch: Dispatch) => {
+    if (dashcardId != null) {
+      dispatch(
+        setSidebar({
+          name: SIDEBAR_NAME.action,
+          props: {
+            dashcardId,
+          },
+        }),
+      );
+    } else {
+      dispatch(closeSidebar());
+    }
+  };

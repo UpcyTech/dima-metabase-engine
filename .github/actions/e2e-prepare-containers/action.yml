@@ -1,0 +1,140 @@
+name: Prepare Docker containers
+description: Prepare Docker containers for E2E tests.
+inputs:
+  username:
+    description: DockerHub username
+    required: true
+  password:
+    description: DockerHub password/token
+    required: true
+  maildev:
+    description: Maildev containers
+    required: true
+    default: false
+  openldap:
+    description: OpenLDAP container
+    required: true
+    default: false
+  postgres:
+    description: Postgres container
+    required: true
+    default: false
+  mysql:
+    description: MySQL container
+    required: true
+    default: false
+  mongo:
+    description: Mongo container
+    required: true
+    default: false
+  webhook:
+    description: Webhook tester container
+    required: false
+    default: false
+  snowplow:
+    description: Snowplow micro container
+    required: false
+    default: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Authenticate to prevent API rate limit
+      shell: bash
+      env:
+        DOCKER_USERNAME: ${{ inputs.username }}
+        DOCKER_PASSWORD: ${{ inputs.password }}
+      run: |
+        for attempt in 1 2 3; do
+          echo "Docker login attempt $attempt of 3..."
+          if echo "$DOCKER_PASSWORD" | docker login --username "$DOCKER_USERNAME" --password-stdin; then
+            echo "Docker login succeeded on attempt $attempt"
+            break
+          fi
+          if [ $attempt -eq 3 ]; then
+            echo "::error::Docker login failed after 3 attempts"
+            exit 1
+          fi
+          echo "::warning::Docker login attempt $attempt failed, retrying in 15s..."
+          sleep 15
+        done
+
+    - name: Start Containers
+      shell: bash
+      run: | # bash
+        Y='\033[33m'
+        G='\033[1;32m'
+
+        cd e2e/test/scenarios/
+
+        SERVICES=()
+        [ "${{ inputs.postgres }}" = true ] && SERVICES+=(postgres-sample)
+        [ "${{ inputs.mysql }}" = true ] && SERVICES+=(mysql-sample)
+        [ "${{ inputs.mongo }}" = true ] && SERVICES+=(mongo-sample)
+        [ "${{ inputs.maildev }}" = true ] && SERVICES+=(maildev maildev-ssl)
+        [ "${{ inputs.openldap }}" = true ] && SERVICES+=(ldap)
+        [ "${{ inputs.webhook }}" = true ] && SERVICES+=(webhook-tester)
+        [ "${{ inputs.snowplow }}" = true ] && SERVICES+=(snowplow-micro)
+
+        for attempt in 1 2 3; do
+          echo "Docker compose up attempt $attempt of 3..."
+          if docker compose up "${SERVICES[@]}" -d; then
+            echo "Docker compose up succeeded on attempt $attempt"
+            break
+          fi
+          if [ $attempt -eq 3 ]; then
+            echo "::error::Docker compose up failed after 3 attempts"
+            exit 1
+          fi
+          echo "::warning::Docker compose up attempt $attempt failed, retrying in 30s..."
+          docker compose down 2>/dev/null || true
+          sleep 30
+        done
+
+        if ${{ inputs.maildev }}; then
+          echo -e "${Y}checking maildev container..." &&
+          while ! nc -z localhost 1080; do sleep 1; done &&
+          while ! nc -z localhost 1025; do sleep 1; done &&
+          echo -e "${G}Maildev is up and running!"
+
+          echo -e "${Y}checking maildev-ssl container..." &&
+          while ! nc -z localhost 1081; do sleep 1; done &&
+          while ! nc -z localhost 465; do sleep 1; done &&
+          echo -e "${G}Maildev-ssl is up and running!"
+        fi
+
+        if ${{ inputs.openldap }}; then
+          echo -e "${Y}checking openldap container..." &&
+          while ! nc -z localhost 389; do sleep 1; done &&
+          echo -e "${G}Openldap is up and running!"
+        fi
+
+        if ${{ inputs.postgres }}; then
+          echo -e "${Y}checking postgres container..." &&
+          while ! nc -z localhost 5404; do sleep 1; done &&
+          echo -e "${G}Postgres is up and running!"
+        fi
+
+        if ${{ inputs.mysql }}; then
+          echo -e "${Y}checking mysql container..." &&
+          while ! nc -z localhost 3304; do sleep 1; done &&
+          echo -e "${G}MySQL is up and running!"
+        fi
+
+        if ${{ inputs.mongo }}; then
+          echo -e "${Y}checking mongo container..." &&
+          while ! nc -z localhost 27004; do sleep 1; done &&
+          echo -e "${G}Mongo is up and running!"
+        fi
+
+        if ${{ inputs.webhook }}; then
+          echo -e "${Y}checking webhook test container..." &&
+          while ! nc -z localhost 9080; do sleep 1; done &&
+          echo -e "${G}Webhook tester is up and running!"
+        fi
+
+        if ${{ inputs.snowplow }}; then
+          echo -e "${Y}checking snowplow micro container..." &&
+          while ! nc -z localhost 9090; do sleep 1; done &&
+          echo -e "${G}Snowplow micro is up and running!"
+        fi

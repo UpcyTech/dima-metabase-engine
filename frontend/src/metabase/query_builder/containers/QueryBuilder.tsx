@@ -1,0 +1,647 @@
+import { useHotkeys } from "@mantine/hooks";
+import type { Location } from "history";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ConnectedProps } from "react-redux";
+import type { Route, WithRouterProps } from "react-router";
+import { push } from "react-router-redux";
+import { useMount, usePrevious, useUnmount } from "react-use";
+import { t } from "ttag";
+import _ from "underscore";
+
+import {
+  useCreateBookmarkMutation,
+  useDeleteBookmarkMutation,
+  useListBookmarksQuery,
+  useListTimelinesQuery,
+} from "metabase/api";
+import { LeaveRouteConfirmModal } from "metabase/common/components/LeaveConfirmModal";
+import { isRouteInSync } from "metabase/common/hooks/is-route-in-sync";
+import { useCallbackEffect } from "metabase/common/hooks/use-callback-effect";
+import { useFavicon } from "metabase/common/hooks/use-favicon";
+import { useForceUpdate } from "metabase/common/hooks/use-force-update";
+import { useLoadingTimer } from "metabase/common/hooks/use-loading-timer";
+import { useWebNotification } from "metabase/common/hooks/use-web-notification";
+import { usePageTitleWithLoadingTime } from "metabase/hooks/use-page-title";
+import { VISUALIZATION_SLOW_TIMEOUT } from "metabase/querying/constants";
+import {
+  getDatabasesList,
+  getSampleDatabaseId,
+} from "metabase/querying/selectors";
+import { connect, useSelector } from "metabase/redux";
+import { closeNavbar } from "metabase/redux/app";
+import {
+  closeQB,
+  closeQbNewbModal,
+  editSummary,
+  navigateBackToDashboard,
+  onCloseAIQuestionAnalysisSidebar,
+  onCloseChartSettings,
+  onCloseChartType,
+  onCloseQuestionInfo,
+  onCloseQuestionSettings,
+  onCloseSidebars,
+  onCloseSummary,
+  onCloseTimelines,
+  onOpenAIQuestionAnalysisSidebar,
+  onOpenChartSettings,
+  onOpenChartType,
+  onOpenQuestionInfo,
+  onOpenQuestionSettings,
+  onOpenTimelines,
+  setIsNativeEditorOpen,
+  setParameterValue,
+  setUIControls,
+} from "metabase/redux/query-builder";
+import type { QueryBuilderUIControls, State } from "metabase/redux/store";
+import { getIsNavbarOpen } from "metabase/selectors/app";
+import { getMetadata } from "metabase/selectors/metadata";
+import { getSetting } from "metabase/selectors/settings";
+import {
+  canManageSubscriptions,
+  getUser,
+  getUserIsAdmin,
+} from "metabase/selectors/user";
+import type { Series } from "metabase-types/api";
+
+import {
+  cancelQuery,
+  cancelQuestionChanges,
+  closeObjectDetail,
+  closeSnippetModal,
+  deselectTimelineEvents,
+  followForeignKey,
+  hideTimelineEvents,
+  initializeQB,
+  insertSnippet,
+  loadObjectDetailFKReferences,
+  locationChanged,
+  navigateToNewCardInsideQB,
+  onCancelCreateNewModel,
+  onModelPersistenceChange,
+  onReplaceAllVisualizationSettings,
+  onUpdateVisualizationSettings,
+  openDataReferenceAtQuestion,
+  openSnippetModalWithSelectedText,
+  popDataReferenceStack,
+  pushDataReferenceStack,
+  queryCompleted,
+  queryErrored,
+  resetRowZoom,
+  runDirtyQuestionQuery,
+  runOrCancelQuestionOrSelectedQuery,
+  runQuestionQuery,
+  selectTimelineEvents,
+  setCurrentState,
+  setDatasetEditorTab,
+  setDatasetQuery,
+  setDidFirstNonTableChartRender,
+  setIsShowingSnippetSidebar,
+  setLimit,
+  setMetadataDiff,
+  setModalSnippet,
+  setNativeEditorSelectedRange,
+  setNotebookNativePreviewSidebarWidth,
+  setParameterValueToDefault,
+  setQueryBuilderMode,
+  setSnippetCollectionId,
+  setTemplateTag,
+  setTemplateTagConfig,
+  showTimelineEvents,
+  showTimelinesForCollection,
+  softReloadCard,
+  toggleDataReference,
+  toggleSnippetSidebar,
+  toggleTemplateTagsEditor,
+  turnModelIntoQuestion,
+  turnQuestionIntoModel,
+  updateQuestion,
+  viewNextObjectDetail,
+  viewPreviousObjectDetail,
+  zoomInRow,
+} from "../actions";
+import { trackCardBookmarkAdded } from "../analytics";
+import { View } from "../components/view/View";
+import {
+  getCard,
+  getDataReferenceStack,
+  getDocumentTitle,
+  getEmbeddedParameterVisibility,
+  getFilteredTimelines,
+  getFirstQueryResult,
+  getIsActionListVisible,
+  getIsAdditionalInfoVisible,
+  getIsAnySidebarOpen,
+  getIsDirty,
+  getIsHeaderVisible,
+  getIsLiveResizable,
+  getIsLoadingComplete,
+  getIsNativeEditorOpen,
+  getIsResultDirty,
+  getIsRunnable,
+  getIsTimeseries,
+  getLastRunCard,
+  getModalSnippet,
+  getNativeEditorCursorOffset,
+  getNativeEditorSelectedText,
+  getOriginalCard,
+  getOriginalQuestion,
+  getPageFavicon,
+  getParameterValues,
+  getParameters,
+  getQueryResults,
+  getQueryStartTime,
+  getQuestion,
+  getRawSeries,
+  getSelectedTimelineEventIds,
+  getShouldShowUnsavedChangesWarning,
+  getSnippetCollectionId,
+  getTableForeignKeyReferences,
+  getTableForeignKeys,
+  getTimeseriesXDomain,
+  getUiControls,
+  getVisibleTimelineEventIds,
+  getVisibleTimelineEvents,
+  getVisualizationSettings,
+  getZoomedObjectRowIndex,
+  isResultsMetadataDirty,
+} from "../selectors";
+import { getIsObjectDetail, getMode } from "../selectors/mode";
+import { isNavigationAllowed } from "../utils";
+
+import { useCreateQuestion } from "./use-create-question";
+import { useRegisterQueryBuilderMetabotContext } from "./use-register-query-builder-metabot-context";
+import { useSaveQuestion } from "./use-save-question";
+
+const mapStateToProps = (state: State) => {
+  return {
+    user: getUser(state),
+    canManageSubscriptions: canManageSubscriptions(state),
+    isAdmin: getUserIsAdmin(state),
+
+    mode: getMode(state),
+
+    question: getQuestion(state),
+    originalQuestion: getOriginalQuestion(state),
+    lastRunCard: getLastRunCard(state),
+
+    parameterValues: getParameterValues(state),
+
+    tableForeignKeys: getTableForeignKeys(state),
+    tableForeignKeyReferences: getTableForeignKeyReferences(state),
+
+    card: getCard(state),
+    originalCard: getOriginalCard(state),
+    databases: getDatabasesList(state),
+
+    metadata: getMetadata(state),
+
+    timelines: getFilteredTimelines(state),
+    timelineEvents: getVisibleTimelineEvents(state),
+    selectedTimelineEventIds: getSelectedTimelineEventIds(state),
+    visibleTimelineEventIds: getVisibleTimelineEventIds(state),
+    xDomain: getTimeseriesXDomain(state),
+
+    result: getFirstQueryResult(state),
+    results: getQueryResults(state),
+    rawSeries: getRawSeries(state),
+
+    uiControls: getUiControls(state),
+    ...state.qb.uiControls,
+    dataReferenceStack: getDataReferenceStack(state),
+    isAnySidebarOpen: getIsAnySidebarOpen(state),
+
+    isDirty: getIsDirty(state),
+    isObjectDetail: getIsObjectDetail(state),
+    isNativeEditorOpen: getIsNativeEditorOpen(state),
+    isNavBarOpen: getIsNavbarOpen(state),
+    isLiveResizable: getIsLiveResizable(state),
+    isTimeseries: getIsTimeseries(state),
+    isHeaderVisible: getIsHeaderVisible(state),
+    isActionListVisible: getIsActionListVisible(state),
+    isAdditionalInfoVisible: getIsAdditionalInfoVisible(state),
+
+    parameters: getParameters(state),
+    sampleDatabaseId: getSampleDatabaseId(state),
+
+    isRunnable: getIsRunnable(state),
+    isResultDirty: getIsResultDirty(state),
+    isMetadataDirty: isResultsMetadataDirty(state),
+
+    visualizationSettings: getVisualizationSettings(state),
+
+    queryStartTime: getQueryStartTime(state),
+    nativeEditorCursorOffset: getNativeEditorCursorOffset(state),
+    nativeEditorSelectedText: getNativeEditorSelectedText(state),
+    modalSnippet: getModalSnippet(state),
+    snippetCollectionId: getSnippetCollectionId(state),
+    documentTitle: getDocumentTitle(state),
+    pageFavicon: getPageFavicon(state),
+    isLoadingComplete: getIsLoadingComplete(state),
+
+    zoomedRowIndex: getZoomedObjectRowIndex(state),
+
+    reportTimezone: getSetting(state, "report-timezone-long"),
+    didFirstNonTableChartGenerated: getSetting(
+      state,
+      "non-table-chart-generated",
+    ),
+
+    getEmbeddedParameterVisibility: (slug: string) =>
+      getEmbeddedParameterVisibility(state, slug),
+  };
+};
+
+const mapDispatchToProps = {
+  // from metabase/redux/query-builder (shared tier)
+  closeQB,
+  closeQbNewbModal,
+  navigateBackToDashboard,
+  onCloseAIQuestionAnalysisSidebar,
+  onCloseChartSettings,
+  onCloseChartType,
+  onCloseQuestionInfo,
+  onCloseQuestionSettings,
+  onCloseSidebars,
+  onCloseSummary,
+  onCloseTimelines,
+  editSummary,
+  onOpenAIQuestionAnalysisSidebar,
+  onOpenChartSettings,
+  onOpenChartType,
+  onOpenQuestionInfo,
+  onOpenQuestionSettings,
+  onOpenTimelines,
+  setIsNativeEditorOpen,
+  setParameterValue,
+  setUIControls,
+
+  // from query_builder/actions
+  cancelQuery,
+  cancelQuestionChanges,
+  closeObjectDetail,
+  closeSnippetModal,
+  deselectTimelineEvents,
+  followForeignKey,
+  hideTimelineEvents,
+  initializeQB,
+  insertSnippet,
+  loadObjectDetailFKReferences,
+  locationChanged,
+  navigateToNewCardInsideQB,
+  onCancelCreateNewModel,
+  onModelPersistenceChange,
+  onReplaceAllVisualizationSettings,
+  onUpdateVisualizationSettings,
+  openDataReferenceAtQuestion,
+  openSnippetModalWithSelectedText,
+  popDataReferenceStack,
+  pushDataReferenceStack,
+  queryCompleted,
+  queryErrored,
+  resetRowZoom,
+  runDirtyQuestionQuery,
+  runOrCancelQuestionOrSelectedQuery,
+  runQuestionQuery,
+  selectTimelineEvents,
+  setCurrentState,
+  setDatasetEditorTab,
+  setDatasetQuery,
+  setDidFirstNonTableChartRender,
+  setIsShowingSnippetSidebar,
+  setLimit,
+  setMetadataDiff,
+  setModalSnippet,
+  setNativeEditorSelectedRange,
+  setNotebookNativePreviewSidebarWidth,
+  setParameterValueToDefault,
+  setQueryBuilderMode,
+  setSnippetCollectionId,
+  setTemplateTag,
+  setTemplateTagConfig,
+  showTimelineEvents,
+  showTimelinesForCollection,
+  softReloadCard,
+  toggleDataReference,
+  toggleSnippetSidebar,
+  toggleTemplateTagsEditor,
+  turnModelIntoQuestion,
+  turnQuestionIntoModel,
+  updateQuestion,
+  viewNextObjectDetail,
+  viewPreviousObjectDetail,
+  zoomInRow,
+
+  // other
+  closeNavbar,
+  onChangeLocation: push,
+};
+
+const connector = connect(mapStateToProps, mapDispatchToProps);
+type ReduxProps = ConnectedProps<typeof connector>;
+
+type QueryBuilderInnerProps = ReduxProps &
+  WithRouterProps & {
+    route: Route;
+  };
+
+function QueryBuilderInner(props: QueryBuilderInnerProps) {
+  useFavicon({ favicon: props.pageFavicon ?? null });
+  const { data: fetchedTimelines, isSuccess: areTimelinesLoaded } =
+    useListTimelinesQuery({
+      include: "events",
+    });
+  const { data: bookmarks = [], isSuccess: areBookmarksLoaded } =
+    useListBookmarksQuery();
+  const [createBookmarkMutation] = useCreateBookmarkMutation();
+  const [deleteBookmarkMutation] = useDeleteBookmarkMutation();
+
+  const {
+    question,
+    originalQuestion,
+    location,
+    params,
+    uiControls,
+    isNativeEditorOpen,
+    isAnySidebarOpen,
+    closeNavbar,
+    initializeQB,
+    locationChanged,
+    setUIControls,
+    runOrCancelQuestionOrSelectedQuery,
+    cancelQuery,
+    showTimelinesForCollection,
+    card,
+    isAdmin,
+    isLoadingComplete,
+    closeQB,
+    route,
+    queryBuilderMode,
+    didFirstNonTableChartGenerated,
+    setDidFirstNonTableChartRender,
+    documentTitle,
+    queryStartTime,
+  } = props;
+
+  const isBookmarked = bookmarks.some(
+    (bookmark) => bookmark.type === "card" && bookmark.item_id === card?.id,
+  );
+
+  usePageTitleWithLoadingTime(documentTitle || card?.name || t`Question`, {
+    titleIndex: 1,
+    startTime: queryStartTime,
+    isRunning: uiControls.isRunning,
+  });
+
+  const didTrackFirstNonTableChartGeneratedRef = useRef(
+    didFirstNonTableChartGenerated,
+  );
+  const handleVisualizationRendered = useCallback(
+    (series: Series) => {
+      const isNonTable = series[0].card.display !== "table";
+      if (
+        isAdmin &&
+        !didFirstNonTableChartGenerated &&
+        !didTrackFirstNonTableChartGeneratedRef.current &&
+        isNonTable
+      ) {
+        if (card) {
+          setDidFirstNonTableChartRender(card);
+        }
+        didTrackFirstNonTableChartGeneratedRef.current = true;
+      }
+    },
+    [
+      isAdmin,
+      card,
+      didFirstNonTableChartGenerated,
+      setDidFirstNonTableChartRender,
+    ],
+  );
+
+  const forceUpdate = useForceUpdate();
+  const forceUpdateDebounced = useMemo(
+    () => _.debounce(forceUpdate, 400),
+    [forceUpdate],
+  );
+  const timeout = useRef<number>();
+
+  const previousUIControls = usePrevious(uiControls);
+  const previousLocation = usePrevious(location);
+  const wasShowingAnySidebar = usePrevious(isAnySidebarOpen);
+  const wasNativeEditorOpen = usePrevious(isNativeEditorOpen);
+  const hasQuestion = question != null;
+  const collectionId = question?.collectionId();
+
+  const openModal = useCallback(
+    (
+      modal: QueryBuilderUIControls["modal"],
+      modalContext: QueryBuilderUIControls["modalContext"],
+    ) => setUIControls({ modal, modalContext }),
+    [setUIControls],
+  );
+
+  const closeModal = useCallback(
+    () => setUIControls({ modal: null, modalContext: null }),
+    [setUIControls],
+  );
+
+  const onClickBookmark = () => {
+    const { card } = props;
+    if (!card) {
+      return;
+    }
+
+    if (!isBookmarked) {
+      trackCardBookmarkAdded(card);
+      createBookmarkMutation({ id: card.id, type: "card" });
+    } else {
+      deleteBookmarkMutation({ id: card.id, type: "card" });
+    }
+  };
+
+  /**
+   * Navigation is scheduled so that LeaveRouteConfirmModal's isEnabled
+   * prop has a chance to re-compute on re-render
+   */
+  const [isCallbackScheduled, scheduleCallback] = useCallbackEffect();
+
+  const handleCreate = useCreateQuestion({ scheduleCallback });
+
+  const handleSave = useSaveQuestion({ scheduleCallback });
+
+  useMount(() => {
+    // Prevent initializing the query builder if the route is out of sync
+    // metabase#65500
+    if (!isRouteInSync(location.pathname)) {
+      return;
+    }
+
+    initializeQB(location, params);
+  });
+
+  useRegisterQueryBuilderMetabotContext();
+
+  useEffect(() => {
+    window.addEventListener("resize", forceUpdateDebounced);
+    return () => window.removeEventListener("resize", forceUpdateDebounced);
+  });
+
+  const shouldShowUnsavedChangesWarning = useSelector(
+    getShouldShowUnsavedChangesWarning,
+  );
+
+  useUnmount(() => {
+    cancelQuery();
+    closeModal();
+    closeQB();
+    clearTimeout(timeout.current);
+  });
+
+  useEffect(() => {
+    if (
+      (isAnySidebarOpen && !wasShowingAnySidebar) ||
+      (isNativeEditorOpen && !wasNativeEditorOpen)
+    ) {
+      closeNavbar();
+    }
+  }, [
+    isAnySidebarOpen,
+    wasShowingAnySidebar,
+    isNativeEditorOpen,
+    wasNativeEditorOpen,
+    closeNavbar,
+  ]);
+
+  useEffect(() => {
+    // Gate on the timelines actually being loaded (not just bookmarks), and
+    // re-run when they arrive: showTimelinesForCollection reads the fetched
+    // timelines from the store at dispatch time, so running it before the
+    // `/api/timeline` request resolves dispatches an empty set and the chart
+    // never receives its events. This restores the pre-#73674 `allLoaded`
+    // guarantee that was lost when the Timelines.loadList HOC was removed.
+    if (areBookmarksLoaded && areTimelinesLoaded && hasQuestion) {
+      showTimelinesForCollection(collectionId);
+    }
+  }, [
+    areBookmarksLoaded,
+    areTimelinesLoaded,
+    hasQuestion,
+    collectionId,
+    showTimelinesForCollection,
+    fetchedTimelines,
+  ]);
+
+  useEffect(() => {
+    const { isShowingDataReference, isShowingTemplateTagsEditor } = uiControls;
+    const {
+      isShowingDataReference: wasShowingDataReference,
+      isShowingTemplateTagsEditor: wasShowingTemplateTagsEditor,
+    } = previousUIControls ?? {};
+
+    if (
+      isShowingDataReference !== wasShowingDataReference ||
+      isShowingTemplateTagsEditor !== wasShowingTemplateTagsEditor
+    ) {
+      // when the data reference is toggled we need to trigger a rerender after a short delay in order to
+      // ensure that some components are updated after the animation completes (e.g. card visualization)
+      timeout.current = window.setTimeout(forceUpdateDebounced, 300);
+    }
+  }, [uiControls, previousUIControls, forceUpdateDebounced]);
+
+  useEffect(() => {
+    if (previousLocation && location !== previousLocation) {
+      locationChanged(previousLocation, location, params);
+    }
+  }, [location, params, previousLocation, locationChanged]);
+
+  const [isShowingToaster, setIsShowingToaster] = useState(false);
+
+  const { isRunning } = uiControls;
+
+  const onTimeout = useCallback(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      setIsShowingToaster(true);
+    }
+  }, []);
+
+  useLoadingTimer(isRunning, {
+    timer: VISUALIZATION_SLOW_TIMEOUT,
+    onTimeout,
+  });
+
+  const { requestPermission, showNotification } = useWebNotification();
+
+  useEffect(() => {
+    if (isLoadingComplete) {
+      setIsShowingToaster(false);
+
+      if (
+        "Notification" in window &&
+        Notification.permission === "granted" &&
+        document.hidden
+      ) {
+        showNotification(
+          t`All Set! Your question is ready.`,
+          t`${card?.name} is loaded.`,
+        );
+      }
+    }
+  }, [isLoadingComplete, showNotification, card?.name]);
+
+  const onConfirmToast = useCallback(async () => {
+    await requestPermission();
+    setIsShowingToaster(false);
+  }, [requestPermission]);
+
+  const onDismissToast = useCallback(() => {
+    setIsShowingToaster(false);
+  }, []);
+
+  const isNewQuestion = !originalQuestion;
+  const isLocationAllowed = useCallback(
+    (location?: Location) =>
+      isNavigationAllowed({
+        destination: location,
+        question,
+        isNewQuestion,
+      }),
+    [question, isNewQuestion],
+  );
+
+  const handleCmdEnter = () => {
+    if (queryBuilderMode !== "notebook") {
+      runOrCancelQuestionOrSelectedQuery();
+    }
+  };
+
+  useHotkeys([["mod+Enter", handleCmdEnter]], []);
+
+  return (
+    <>
+      <View
+        {...props}
+        modal={uiControls.modal}
+        recentlySaved={uiControls.recentlySaved}
+        onOpenModal={openModal}
+        onCloseModal={closeModal}
+        onSave={handleSave}
+        onCreate={handleCreate}
+        handleResize={forceUpdateDebounced}
+        isBookmarked={isBookmarked}
+        toggleBookmark={onClickBookmark}
+        onDismissToast={onDismissToast}
+        onConfirmToast={onConfirmToast}
+        isShowingToaster={isShowingToaster}
+        onVisualizationRendered={handleVisualizationRendered}
+      />
+
+      <LeaveRouteConfirmModal
+        isEnabled={shouldShowUnsavedChangesWarning && !isCallbackScheduled}
+        isLocationAllowed={isLocationAllowed}
+        route={route}
+      />
+    </>
+  );
+}
+
+export const QueryBuilder = connector(QueryBuilderInner);

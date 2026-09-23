@@ -1,0 +1,34 @@
+.borderTop {
+  border-top: 1px solid var(--mb-color-border-neutral);
+
+  .borderBottom + & {
+    border-top: none;
+  }
+
+  &:first-child {
+    border-top: none;
+  }
+}
+
+.borderBottom {
+  border-bottom: 1px solid var(--mb-color-border-neutral);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.action {
+  color: var(--mb-color-text-primary);
+
+  &:hover {
+    color: inherit;
+  }
+}
+
+.sticky {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  background: var(--mb-color-background_page-primary);
+}

@@ -1,0 +1,82 @@
+name: dima-engine-c3-sync-selftest
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/dima-engine-upstream-sync-candidate.yml"
+      - ".github/workflows/dima-engine-c3-sync-selftest.yml"
+      - ".dima/tools/patch_surface.py"
+      - ".dima/docker/Dockerfile.c0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 64
+          fetch-tags: false
+
+      - name: Resolve immutable self-test candidate
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(git rev-parse HEAD)"
+          git remote add upstream https://github.com/metabase/metabase.git 2>/dev/null ||             git remote set-url upstream https://github.com/metabase/metabase.git
+          git fetch upstream refs/tags/v0.63.18:refs/tags/v0.63.18 --force
+          candidate="$(git rev-parse 'v0.63.18^{commit}')"
+          test "$candidate" = "2ba2485c78d7e00a9a25f82c00fc201da71590c4"
+          echo "main_before=$before" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+
+      - name: Exercise no-op candidate integration locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          git switch -C sync-selftest origin/main
+          git -c user.name=dima-sync-bot -c user.email=dima-sync-bot@users.noreply.github.com             merge --no-ff --no-commit "${{ steps.base.outputs.candidate }}"
+          test ! -f .git/MERGE_HEAD
+          mkdir -p .dima/reports/c3
+          python .dima/tools/patch_surface.py             --base "${{ steps.base.outputs.candidate }}"             --head HEAD             --json-out .dima/reports/c3/DIMA_PATCH_SURFACE.json             --md-out .dima/reports/c3/DIMA_PATCH_SURFACE.md             --assert-c0
+
+      - name: Build sync candidate path from source
+        run: |
+          docker build             -f .dima/docker/Dockerfile.c0             --build-arg MB_EDITION=oss             --build-arg VERSION=sync-v0.63.18-selftest             -t dima-engine-c3:selftest .
+
+      - name: Verify main was never promoted
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          test "$remote_main" = "${{ steps.base.outputs.main_before }}"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path(".dima/reports/c3/C3_SYNC_SELFTEST.json")
+          p.write_text(json.dumps({
+            "status":"GREEN",
+            "candidate_ref":"v0.63.18",
+            "candidate_sha":"2ba2485c78d7e00a9a25f82c00fc201da71590c4",
+            "conflict_count":0,
+            "main_mutated":False,
+            "candidate_only":True,
+            "source_build":True,
+            "patch_surface_assert_c0":True,
+          },indent=2)+"\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dima-engine-c3-selftest-${{ github.sha }}
+          path: .dima/reports/c3/
+          if-no-files-found: error
+          retention-days: 30

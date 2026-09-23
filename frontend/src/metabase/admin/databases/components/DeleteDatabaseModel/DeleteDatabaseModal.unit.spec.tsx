@@ -1,0 +1,131 @@
+import userEvent from "@testing-library/user-event";
+import fetchMock from "fetch-mock";
+
+import {
+  renderWithProviders,
+  screen,
+  waitForLoaderToBeRemoved,
+} from "__support__/ui";
+import type { Database } from "metabase-types/api";
+
+import type { DeleteDatabaseModalProps } from "./DeleteDatabaseModal";
+import { DeleteDatabaseModal } from "./DeleteDatabaseModal";
+
+const getUsageInfo = (hasContent: boolean) => ({
+  question: hasContent ? 10 : 0,
+  dataset: hasContent ? 20 : 0,
+  metric: hasContent ? 30 : 0,
+  segment: hasContent ? 40 : 0,
+  transform: hasContent ? 50 : 0,
+});
+
+const database = { name: "database name", id: 1 } as Database;
+
+const setup = async ({
+  onDelete = jest.fn(),
+  hasContent = true,
+}: {
+  onDelete?: DeleteDatabaseModalProps["onDelete"];
+  hasContent?: boolean;
+} = {}) => {
+  fetchMock.get("path:/api/database/1/usage_info", getUsageInfo(hasContent));
+  renderWithProviders(
+    <DeleteDatabaseModal
+      opened
+      title={"Delete the destination database?"}
+      defaultDatabaseRemovalMessage={
+        "Users routed to this database will lose access to every question, model, metric, and segment if you continue. Transforms that use this database won’t be deleted, but they will stop working."
+      }
+      onClose={jest.fn()}
+      onDelete={onDelete}
+      database={database}
+    />,
+  );
+
+  await waitForLoaderToBeRemoved();
+
+  return {
+    onDelete,
+  };
+};
+
+describe("DeleteDatabaseModal", () => {
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("should allow deleting database without content after confirming its name", async () => {
+    const { onDelete } = await setup({ hasContent: false });
+
+    const deleteButton = screen.getByRole("button", {
+      name: "Delete this DB connection",
+    });
+
+    expect(
+      screen.queryByText("Delete 10 saved questions"),
+    ).not.toBeInTheDocument();
+
+    expect(deleteButton).toBeDisabled();
+
+    await userEvent.type(
+      screen.getByTestId("database-name-confirmation-input"),
+      "database name",
+    );
+
+    expect(deleteButton).toBeEnabled();
+
+    await userEvent.click(deleteButton);
+
+    expect(onDelete).toHaveBeenCalled();
+  });
+
+  it("should allow deleting database with content after confirming its name and its content removal", async () => {
+    const { onDelete } = await setup({ hasContent: true });
+
+    const deleteButton = screen.getByRole("button", {
+      name: "Delete this DB connection",
+    });
+
+    expect(deleteButton).toBeDisabled();
+
+    await userEvent.click(screen.getByText("Delete 10 saved questions"));
+    await userEvent.click(screen.getByText("Delete 20 models"));
+    await userEvent.click(screen.getByText("Delete 30 metrics"));
+    await userEvent.click(screen.getByText("Delete 40 segments"));
+    await userEvent.click(screen.getByText("50 transforms will stop working"));
+
+    expect(deleteButton).toBeDisabled();
+
+    await userEvent.type(
+      screen.getByTestId("database-name-confirmation-input"),
+      "database name",
+    );
+
+    expect(deleteButton).toBeEnabled();
+
+    await userEvent.click(deleteButton);
+
+    expect(onDelete).toHaveBeenCalled();
+  });
+
+  it("shows an error if removal failed", async () => {
+    await setup({
+      hasContent: false,
+      onDelete: () => {
+        throw new Error("Something went wrong");
+      },
+    });
+
+    const deleteButton = screen.getByRole("button", {
+      name: "Delete this DB connection",
+    });
+    await userEvent.type(
+      screen.getByTestId("database-name-confirmation-input"),
+      "database name",
+    );
+
+    await userEvent.click(deleteButton);
+
+    expect(screen.getByText("Something went wrong")).toBeInTheDocument();
+  });
+});

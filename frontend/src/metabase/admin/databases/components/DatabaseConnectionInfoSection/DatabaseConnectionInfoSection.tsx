@@ -1,0 +1,113 @@
+import { useCallback } from "react";
+import { push } from "react-router-redux";
+import { t } from "ttag";
+
+import {
+  tableApi,
+  useDismissDatabaseSyncSpinnerMutation,
+  useRescanDatabaseFieldValuesMutation,
+  useSyncDatabaseSchemaMutation,
+} from "metabase/api";
+import { listTag } from "metabase/api/tags";
+import { ActionButton } from "metabase/common/components/ActionButton";
+import {
+  getDbNotModifiableMessage,
+  isDbModifiable,
+} from "metabase/common/utils/database";
+import { useDispatch } from "metabase/redux";
+import { Button, Flex, Tooltip } from "metabase/ui";
+import { isSyncCompleted } from "metabase/utils/syncing";
+import type { Database } from "metabase-types/api";
+
+import { DatabaseConnectionHealthInfo } from "../DatabaseConnectionHealthInfo";
+import {
+  DatabaseInfoSection,
+  DatabaseInfoSectionDivider,
+} from "../DatabaseInfoSection";
+
+import S from "./DatabaseConnectionInfoSection.module.css";
+
+export const DatabaseConnectionInfoSection = ({
+  database,
+}: {
+  database: Database;
+}) => {
+  const isSynced = isSyncCompleted(database);
+
+  const dispatch = useDispatch();
+  const [syncDatabaseSchema] = useSyncDatabaseSchemaMutation();
+  const [rescanDatabaseFieldValues] = useRescanDatabaseFieldValuesMutation();
+  const [dismissSyncSpinner] = useDismissDatabaseSyncSpinnerMutation();
+
+  const handleSyncDatabaseSchema = async () => {
+    await syncDatabaseSchema(database.id).unwrap();
+    // refresh any table lists now that the schema may have changed
+    dispatch(tableApi.util.invalidateTags([listTag("table")]));
+  };
+
+  const handleDismissSyncSpinner = useCallback(
+    () => dismissSyncSpinner(database.id).unwrap(),
+    [database.id, dismissSyncSpinner],
+  );
+
+  const openDbDetailsModal = useCallback(() => {
+    dispatch(push(`/admin/databases/${database.id}/edit`));
+  }, [database.id, dispatch]);
+
+  return (
+    <DatabaseInfoSection
+      condensed
+      name={t`Connection and sync`}
+      description={t`Manage details about the database connection and when Metabase ingests new data.`}
+      data-testid="database-connection-info-section"
+    >
+      <Flex align="center" justify="space-between" gap="lg">
+        <DatabaseConnectionHealthInfo databaseId={database.id} />
+        <Tooltip
+          disabled={isDbModifiable(database)}
+          label={getDbNotModifiableMessage(database)}
+        >
+          <Button
+            onClick={openDbDetailsModal}
+            style={{ flexShrink: 0 }}
+            disabled={!isDbModifiable(database)}
+          >{t`Edit connection details`}</Button>
+        </Tooltip>
+      </Flex>
+
+      <DatabaseInfoSectionDivider condensed />
+
+      {!database.is_attached_dwh && (
+        <Flex gap="sm" wrap="wrap">
+          {!isSynced && <Button disabled>{t`Syncing database…`}</Button>}
+          <ActionButton
+            className={S.actionButton}
+            actionFn={handleSyncDatabaseSchema}
+            normalText={t`Sync database schema`}
+            activeText={t`Starting…`}
+            failedText={t`Failed to sync`}
+            successText={t`Sync triggered!`}
+          />
+          <ActionButton
+            className={S.actionButton}
+            actionFn={() => rescanDatabaseFieldValues(database.id).unwrap()}
+            normalText={t`Re-scan field values`}
+            activeText={t`Starting…`}
+            failedText={t`Failed to start scan`}
+            successText={t`Scan triggered!`}
+          />
+          {!isSynced && (
+            <ActionButton
+              className={S.actionButton}
+              actionFn={handleDismissSyncSpinner}
+              normalText={t`Dismiss sync spinner manually`}
+              activeText={t`Dismissing…`}
+              failedText={t`Failed to dismiss sync spinner`}
+              successText={t`Sync spinners dismissed!`}
+            />
+          )}
+        </Flex>
+      )}
+    </DatabaseInfoSection>
+  );
+};

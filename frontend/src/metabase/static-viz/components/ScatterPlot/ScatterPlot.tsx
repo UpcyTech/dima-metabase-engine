@@ -1,0 +1,105 @@
+import { Group } from "@visx/group";
+import { init } from "echarts/core";
+
+import type { StaticChartProps } from "metabase/static-viz/components/StaticVisualization";
+import { sanitizeSvgForBatik } from "metabase/static-viz/lib/svg";
+import { getChartHeight } from "metabase/static-viz/lib/utils";
+import { registerEChartsModules } from "metabase/visualizations/echarts";
+import { getChartLayout } from "metabase/visualizations/echarts/cartesian/layout";
+import { getLegendItems } from "metabase/visualizations/echarts/cartesian/model/legend";
+import { getScatterPlotModel } from "metabase/visualizations/echarts/cartesian/scatter/model";
+import { getScatterPlotOption } from "metabase/visualizations/echarts/cartesian/scatter/option";
+
+import Watermark from "../../watermark.svg?component";
+import { Legend } from "../Legend";
+import { calculateLegendRows } from "../Legend/utils";
+
+registerEChartsModules();
+
+const WIDTH = 540;
+const HEIGHT = 360;
+const LEGEND_PADDING = 8;
+
+export function ScatterPlot({
+  rawSeries,
+  settings,
+  renderingContext,
+  width = WIDTH,
+  height = HEIGHT,
+  isStorybook = false,
+  hasDevWatermark = false,
+  fitWithinBounds = false,
+}: StaticChartProps) {
+  const chartModel = getScatterPlotModel(
+    rawSeries,
+    settings,
+    [],
+    renderingContext,
+  );
+
+  const legendItems = getLegendItems(chartModel.seriesModels);
+  const { height: legendHeight, items: legendLayoutItems } =
+    calculateLegendRows({
+      items: legendItems,
+      width,
+      horizontalPadding: LEGEND_PADDING,
+      verticalPadding: LEGEND_PADDING,
+    });
+
+  const chartHeight = getChartHeight({ fitWithinBounds, legendHeight, height });
+
+  const chart = init(null, null, {
+    renderer: "svg",
+    ssr: true,
+    width,
+    height: chartHeight,
+  });
+
+  const chartLayout = getChartLayout(
+    chartModel,
+    settings,
+    false,
+    width,
+    chartHeight,
+    renderingContext,
+  );
+
+  const option = getScatterPlotOption(
+    chartModel,
+    chartLayout,
+    null,
+    [],
+    settings,
+    width,
+    false,
+    renderingContext,
+  );
+  chart.setOption(option);
+
+  const chartSvg = sanitizeSvgForBatik(chart.renderToSVGString(), isStorybook);
+  chart.dispose();
+
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={width}
+      height={fitWithinBounds ? height : height + legendHeight}
+    >
+      <Legend items={legendLayoutItems} />
+      <Group top={legendHeight}>
+        <g dangerouslySetInnerHTML={{ __html: chartSvg }}></g>
+      </Group>
+      {hasDevWatermark && (
+        <Watermark
+          x={legendHeight}
+          y="0"
+          height={height}
+          width={width}
+          preserveAspectRatio="xMinYMin slice"
+          fill={renderingContext.getColor("text-secondary")}
+          opacity={0.2}
+        />
+      )}
+    </svg>
+  );
+}

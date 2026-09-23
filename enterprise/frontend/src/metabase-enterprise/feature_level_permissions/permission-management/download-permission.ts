@@ -1,0 +1,211 @@
+import { push } from "react-router-redux";
+import { t } from "ttag";
+
+import { Messages } from "metabase/admin/permissions/constants/messages";
+import {
+  getPermissionWarning,
+  getPermissionWarningModal,
+} from "metabase/admin/permissions/selectors/confirmations";
+import {
+  DataPermissionType,
+  type PermissionOption,
+  type PermissionSectionConfig,
+} from "metabase/admin/permissions/types";
+import {
+  getFieldsPermission,
+  getSchemasPermission,
+  getTablesPermission,
+} from "metabase/admin/permissions/utils/graph";
+import { getGroupFocusPermissionsUrl } from "metabase/admin/permissions/utils/urls";
+import {
+  DataPermission,
+  DataPermissionValue,
+  type Group,
+  type GroupsPermissions,
+  type PermissionEntityId,
+  type PermissionSubject,
+  type SchemaEntityId,
+  type TableEntityId,
+} from "metabase-types/api";
+
+const getTooltipMessage = (isAdmin: boolean, isBlockedAccess: boolean) => {
+  if (isAdmin) {
+    return Messages.UNABLE_TO_CHANGE_ADMIN_PERMISSIONS;
+  }
+
+  if (isBlockedAccess) {
+    return Messages.UNABLE_TO_DOWNLOAD_RESULTS;
+  }
+
+  return null;
+};
+
+export const DOWNLOAD_PERMISSION_OPTIONS: Record<string, PermissionOption> = {
+  none: {
+    // eslint-disable-next-line ttag/no-module-declaration -- see metabase#55045
+    label: t`No`,
+    value: DataPermissionValue.NONE,
+    icon: "close",
+    iconColor: "feedback-negative",
+  },
+  limited: {
+    // eslint-disable-next-line ttag/no-module-declaration -- see metabase#55045
+    label: t`10 thousand rows`,
+    value: DataPermissionValue.LIMITED,
+    icon: "10k",
+    iconColor: "accent7",
+  },
+  full: {
+    // eslint-disable-next-line ttag/no-module-declaration -- see metabase#55045
+    label: t`1 million rows`,
+    value: DataPermissionValue.FULL,
+    icon: "1m",
+    iconColor: "accent7",
+  },
+  controlled: {
+    // eslint-disable-next-line ttag/no-module-declaration -- see metabase#55045
+    label: t`Granular`,
+    value: DataPermissionValue.CONTROLLED,
+    icon: "permissions_limited",
+    iconColor: "feedback-warning",
+  },
+};
+
+const DOWNLOAD_PERMISSIONS_DESC = [
+  DOWNLOAD_PERMISSION_OPTIONS.full.value,
+  DOWNLOAD_PERMISSION_OPTIONS.limited.value,
+  DOWNLOAD_PERMISSION_OPTIONS.controlled.value,
+  DOWNLOAD_PERMISSION_OPTIONS.none.value,
+];
+
+const getPermissionValue = (
+  permissions: GroupsPermissions,
+  groupId: number,
+  entityId: PermissionEntityId,
+  permissionSubject: PermissionSubject,
+  permission: DataPermission,
+) => {
+  switch (permissionSubject) {
+    case "fields":
+      return getFieldsPermission(
+        permissions,
+        groupId,
+        entityId as TableEntityId,
+        permission,
+      );
+    case "tables":
+      return getTablesPermission(
+        permissions,
+        groupId,
+        entityId as SchemaEntityId,
+        permission,
+      );
+    default:
+      return getSchemasPermission(permissions, groupId, entityId, permission);
+  }
+};
+
+const getEffectiveDownloadPermissionValue = (
+  permissions: GroupsPermissions,
+  groupId: number,
+  entityId: PermissionEntityId,
+  permissionSubject: PermissionSubject,
+) => {
+  const viewDataPermissionValue = getPermissionValue(
+    permissions,
+    groupId,
+    entityId,
+    permissionSubject,
+    DataPermission.VIEW_DATA,
+  );
+
+  if (viewDataPermissionValue === DataPermissionValue.BLOCKED) {
+    return DOWNLOAD_PERMISSION_OPTIONS.none.value;
+  }
+
+  return getPermissionValue(
+    permissions,
+    groupId,
+    entityId,
+    permissionSubject,
+    DataPermission.DOWNLOAD,
+  );
+};
+
+export const buildDownloadPermission = (
+  entityId: PermissionEntityId,
+  groupId: number,
+  isAdmin: boolean,
+  permissions: GroupsPermissions,
+  dataAccessPermissionValue: DataPermissionValue,
+  defaultGroup: Group,
+  permissionSubject: PermissionSubject,
+): PermissionSectionConfig => {
+  const hasChildEntities = permissionSubject !== "fields";
+  const isBlockPermission =
+    dataAccessPermissionValue === DataPermissionValue.BLOCKED;
+
+  const value = isBlockPermission
+    ? DOWNLOAD_PERMISSION_OPTIONS.none.value
+    : getPermissionValue(
+        permissions,
+        groupId,
+        entityId,
+        permissionSubject,
+        DataPermission.DOWNLOAD,
+      );
+
+  const defaultGroupValue = getEffectiveDownloadPermissionValue(
+    permissions,
+    defaultGroup.id,
+    entityId,
+    permissionSubject,
+  );
+
+  const isDisabled = isAdmin || isBlockPermission;
+
+  const disabledTooltip = getTooltipMessage(isAdmin, isBlockPermission);
+
+  const warning = getPermissionWarning(
+    value,
+    defaultGroupValue,
+    permissionSubject,
+    defaultGroup,
+    groupId,
+    DOWNLOAD_PERMISSIONS_DESC,
+  );
+
+  const confirmations = (newValue: DataPermissionValue) => [
+    getPermissionWarningModal(
+      newValue,
+      defaultGroupValue,
+      permissionSubject,
+      defaultGroup,
+      groupId,
+      DOWNLOAD_PERMISSIONS_DESC,
+    ),
+  ];
+
+  return {
+    permission: DataPermission.DOWNLOAD,
+    type: DataPermissionType.DOWNLOAD,
+    isDisabled,
+    disabledTooltip,
+    value,
+    warning,
+    confirmations,
+    isHighlighted: isAdmin,
+    options: [
+      DOWNLOAD_PERMISSION_OPTIONS.none,
+      ...(hasChildEntities ? [DOWNLOAD_PERMISSION_OPTIONS.controlled] : []),
+      DOWNLOAD_PERMISSION_OPTIONS.limited,
+      DOWNLOAD_PERMISSION_OPTIONS.full,
+    ],
+    postActions: hasChildEntities
+      ? {
+          controlled: () =>
+            push(getGroupFocusPermissionsUrl(groupId, entityId)),
+        }
+      : undefined,
+  };
+};

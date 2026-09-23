@@ -1,0 +1,23 @@
+import type { PartialBy } from "metabase/common/types";
+import type { EnterpriseSharedState } from "metabase-enterprise/shared/reducer";
+import type { EnterpriseState } from "metabase-enterprise/shared/types";
+import type { DatabaseId, GroupId, Impersonation } from "metabase-types/api";
+
+import type { AdvancedPermissionsState } from "./reducer";
+
+export type ImpersonationParams = { groupId: GroupId; databaseId: DatabaseId };
+
+export interface AdvancedPermissionsStoreState extends EnterpriseState {
+  plugins: {
+    shared: EnterpriseSharedState;
+    advancedPermissionsPlugin: AdvancedPermissionsState;
+  };
+}
+
+export type ImpersonationDraft = PartialBy<Impersonation, "attribute">;
+
+export type ImpersonationModalParams = {
+  groupId: string;
+  impersonatedDatabaseId?: string;
+  databaseId?: string;
+};

@@ -1,0 +1,13 @@
+{:paths
+ ["src" "resources"]
+
+ :deps
+ {}
+
+ :aliases
+ {:oss
+  ;; JDBC driver isn't GPL-compatible
+  {}
+
+  :ee
+  {:extra-deps {com.oracle.database.jdbc/ojdbc17 {:mvn/version "23.9.0.25.07"}}}}}

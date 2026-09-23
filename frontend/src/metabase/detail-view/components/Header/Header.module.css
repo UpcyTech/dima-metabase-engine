@@ -1,0 +1,11 @@
+.avatarFrame {
+  background-color: var(--mb-color-background_page-secondary);
+  border: 1px solid var(--mb-color-border-neutral);
+  border-radius: 50%;
+  overflow: hidden;
+}
+
+.text {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}

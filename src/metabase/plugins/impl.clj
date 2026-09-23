@@ -1,0 +1,213 @@
+(ns metabase.plugins.impl
+  (:require
+   [clojure.core.memoize :as memoize]
+   [clojure.java.classpath :as classpath]
+   [clojure.java.io :as io]
+   [clojure.string :as str]
+   [environ.core :as env]
+   [metabase.classloader.core :as classloader]
+   [metabase.plugins.initialize :as plugins.init]
+   [metabase.util.files :as u.files]
+   [metabase.util.i18n :refer [trs]]
+   [metabase.util.log :as log]
+   [metabase.util.yaml :as yaml])
+  (:import
+   (java.io File)
+   (java.nio.file Files FileSystems FileVisitOption Path Paths)))
+
+(set! *warn-on-reflection* true)
+
+(defn- plugins-dir-filename ^String []
+  (or (env/env :mb-plugins-dir)
+      (.getAbsolutePath (io/file "plugins"))))
+
+(def ^:private plugins-dir*
+  ;; Memoized so we don't log the error messages multiple times if the plugins directory doesn't change
+  (memoize/memo
+   (fn [filename]
+     (try
+       ;; attempt to create <current-dir>/plugins if it doesn't already exist. Check that the directory is readable.
+       (let [path (u.files/get-path filename)]
+         (u.files/create-dir-if-not-exists! path)
+         (assert (Files/isWritable path)
+                 (trs "Metabase does not have permissions to write to plugins directory {0}" filename))
+         {:path  path, :temp false})
+       ;; If we couldn't create the directory, or the directory is not writable, fall back to a temporary directory
+       ;; rather than failing to launch entirely. Log instructions for what should be done to fix the problem.
+       (catch Throwable e
+         (log/warn
+          (format "Metabase cannot use the plugins directory %s" filename)
+          "\n"
+          "Please make sure the directory exists and that Metabase has permission to write to it."
+          "You can change the directory Metabase uses for modules by setting the environment variable MB_PLUGINS_DIR."
+          "Falling back to a temporary directory for now."
+          (str "Error: " (ex-message e)))
+         ;; Check whether the fallback temporary directory is writable. If it's not, there's no way for us to
+         ;; gracefully proceed here. Throw an Exception detailing the critical issues.
+         (let [path (u.files/get-path (System/getProperty "java.io.tmpdir"))]
+           (assert (Files/isWritable path)
+                   (trs "Metabase cannot write to temporary directory. Please set MB_PLUGINS_DIR to a writable directory and restart Metabase."))
+           {:path path, :temp true}))))))
+
+(defn plugins-dir-info
+  "Map with a :path key containing the `Path` to the Metabase plugins directory, and a :temp key indicating whether a
+  temporary directory was used."
+  ^Path []
+  (plugins-dir* (plugins-dir-filename)))
+
+(defn plugins-dir
+  "Get a `Path` to the Metabase plugins directory, creating it if needed. If it cannot be created for one reason or
+  another, or if we do not have write permissions for it, use a temporary directory instead.
+
+  This is a wrapper around `plugins-dir-info` which also contains a :temp key indicating whether a temporary directory
+  was used."
+  []
+  (:path (plugins-dir-info)))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                          loading/initializing plugins                                          |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+(defn- add-to-classpath! [^Path jar-path]
+  (classloader/add-url-to-classpath! (-> jar-path .toUri .toURL)))
+
+(defn- slurp-plugin-manifest-from-archive
+  "Find and read `metabase-plugin.yaml` from a JAR archive. Prefers `metabase/<driver>/metabase-plugin.yaml`
+  over a legacy root-level manifest. Logs a warning if multiple manifests are found."
+  ^String [^Path jar-path]
+  (with-open [fs (FileSystems/newFileSystem jar-path (ClassLoader/getSystemClassLoader))]
+    (let [all-matcher (.getPathMatcher fs "glob:**/metabase-plugin.yaml")
+          root        (.getPath fs "/" (make-array String 0))]
+      (with-open [stream (Files/walk root 3 (make-array FileVisitOption 0))]
+        (let [all-manifests (-> stream
+                                (.filter (reify java.util.function.Predicate
+                                           (test [_ p] (.matches all-matcher ^Path p))))
+                                (.collect (java.util.stream.Collectors/toList)))
+              nested-matcher (.getPathMatcher fs "glob:/metabase/*/metabase-plugin.yaml")
+              ^Path manifest (or (first (filter #(.matches nested-matcher ^Path %) all-manifests))
+                                 (first all-manifests))]
+          (when (> (count all-manifests) 1)
+            (log/warnf "Found %d metabase-plugin.yaml files in %s: %s — using %s"
+                       (count all-manifests)
+                       (.getFileName jar-path)
+                       (str/join ", " (map str all-manifests))
+                       (str manifest)))
+          (when manifest
+            (String. (Files/readAllBytes manifest))))))))
+
+(defn- plugin-info [^Path jar-path]
+  (some-> (slurp-plugin-manifest-from-archive jar-path)
+          yaml/parse-string))
+
+(defn- init-plugin-with-info!
+  "Initialize plugin using parsed info from a plugin manifest. Returns truthy if plugin was successfully initialized;
+  falsey otherwise."
+  [info]
+  (plugins.init/init-plugin-with-info! info))
+
+(defn- init-plugin!
+  "Init plugin JAR file; returns truthy if plugin initialization was successful."
+  [^Path jar-path]
+  (if-let [info (plugin-info jar-path)]
+    ;; for plugins that include a metabase-plugin.yaml manifest run the normal init steps, don't add to classpath yet
+    (init-plugin-with-info! (assoc info :add-to-classpath! #(add-to-classpath! jar-path)))
+    ;; for all other JARs just add to classpath and call it a day
+    (add-to-classpath! jar-path)))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                                 load-plugins!                                                  |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+(defn- plugins-paths []
+  (for [^Path path (u.files/files-seq (plugins-dir))
+        :when      (and (u.files/regular-file? path)
+                        (u.files/readable? path)
+                        (str/ends-with? (.getFileName path) ".jar")
+                        (or (not (str/ends-with? (.getFileName path) "spark-deps.jar"))
+                            ;; if the JAR in question is the spark deps JAR we cannot load it because it's signed, and
+                            ;; the Metabase JAR itself as well as plugins no longer are; Java will throw an Exception
+                            ;; if different JARs with `metabase` packages have different signing keys. Go ahead and
+                            ;; ignore it but let people know they can get rid of it.
+                            (log/warn
+                             "spark-deps.jar is no longer needed by Metabase 0.32.0+. You can delete it from the plugins directory.")))]
+    path))
+
+(defn- load-plugin-manifest! [path]
+  (some-> (slurp (str path)) yaml/parse-string plugins.init/init-plugin-with-info!))
+
+(defn- bundled-driver-manifest-paths
+  "Return a sequence of paths (URIs when running from a jar, Paths in dev) for `metabase-plugin.yaml` plugin manifests
+  for drivers on the classpath. Driver manifests live at `metabase/<driver-name>/metabase-plugin.yaml` on the classpath."
+  []
+  (if (u.files/running-from-jar?)
+    (u.files/find-in-current-jar "glob:/metabase/*/metabase-plugin.yaml")
+    (let [matcher (.getPathMatcher (java.nio.file.FileSystems/getDefault) "glob:**/metabase/*/metabase-plugin.yaml")]
+      (for [^File f (classpath/system-classpath)
+            :when (.isDirectory f)
+            founds [(-> (.toURI f)
+                        (Paths/get)
+                        (Files/find 3
+                                    (fn [path _attr] (.matches matcher path))
+                                    (make-array FileVisitOption 0))
+                        (.collect (java.util.stream.Collectors/toList)))]
+            f founds]
+        f))))
+
+(defn- load-bundled-driver-plugin-manifests!
+  "Find and load driver plugin manifests from the classpath. In the uberjar, driver classes are flattened directly into
+  the jar (rather than shipped as nested JARs in a `modules/` directory) and their manifests live at
+  `metabase/<driver>/metabase-plugin.yaml`. In dev, the same manifests are found via the driver resource directories on
+  the classpath."
+  []
+  (doseq [manifest-path (bundled-driver-manifest-paths)]
+    (log/infof "Loading driver plugin manifest at %s" (str manifest-path))
+    (load-plugin-manifest! manifest-path)))
+
+(defn- has-manifest? ^Boolean [^Path path]
+  (boolean (slurp-plugin-manifest-from-archive path)))
+
+(defn- init-plugins! [paths]
+  ;; sort paths so that ones that correspond to JARs with no plugin manifest (e.g. a dependency like the Oracle JDBC
+  ;; driver `ojdbc8.jar`) always get initialized (i.e., added to the classpath) first; that way, Metabase drivers that
+  ;; depend on them (such as Oracle) can be initialized the first time we see them.
+  ;;
+  ;; In Clojure world at least `false` < `true` so we can use `sort-by` to get non-Metabase-plugin JARs in front
+  (doseq [^Path path (sort-by has-manifest? paths)]
+    (try
+      (init-plugin! path)
+      (catch Throwable e
+        (log/errorf "Failed to initialize plugin %s: %s" (.getFileName path) (ex-message e))))))
+
+(defn- load! []
+  ;; Load any user-supplied plugin JARs from the plugins directory (e.g. Oracle JDBC driver).
+  ;; System/bundled drivers are no longer extracted to disk — they are flattened into the uberjar
+  ;; and their manifests are loaded from the classpath via load-driver-plugin-manifests! below.
+  (log/infof "Loading plugins in %s..." (str (plugins-dir)))
+  (let [paths (plugins-paths)]
+    (init-plugins! paths))
+  (load-bundled-driver-plugin-manifests!))
+
+(defonce ^:private loaded? (atom false))
+
+(defn load-plugins!
+  "Load Metabase plugins. Bundled drivers are compiled directly into the uberjar and their plugin manifests are
+  discovered on the classpath at `metabase/<driver>/metabase-plugin.yaml`. User-supplied plugins (e.g. Oracle JDBC
+  driver JARs) are loaded from the plugins directory, which defaults to `./plugins`.
+
+  When loading plugins, Metabase performs the following steps:
+
+  *  Metabase creates the plugins directory if it does not already exist.
+  *  Each JAR in the plugins directory that *does not* include a Metabase plugin manifest is added to the classpath.
+  *  For JARs that include a Metabase plugin manifest (a `metabase-plugin.yaml` file), a lazy-loading Metabase driver
+     is registered; when the driver is initialized (automatically, when certain methods are called) the JAR is added
+     to the classpath and the driver namespace is loaded.
+  *  Bundled driver plugin manifests are loaded from the classpath (not from disk).
+
+  This function will only perform loading steps the first time it is called — it is safe to call this function more
+  than once."
+  []
+  (when-not @loaded?
+    (locking loaded?
+      (when-not @loaded?
+        (load!)
+        (reset! loaded? true)))))

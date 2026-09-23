@@ -1,0 +1,129 @@
+import { t } from "ttag";
+import _ from "underscore";
+
+import { cardApi, dashboardApi } from "metabase/api";
+import { runRtkEndpoint } from "metabase/api/utils/run-rtk-endpoint";
+import { getTrashUndoMessage } from "metabase/archive/utils";
+import { canonicalCollectionId } from "metabase/common/collections/utils";
+import { fetchDashboard } from "metabase/dashboard/actions";
+import { createThunkAction } from "metabase/redux";
+import { addUndo } from "metabase/redux/undo";
+
+// just using the entity action doesn't cause the dashboard to live update
+// calling fetchDashboard ensures that the view updates with the last values
+export const SET_ARCHIVED_DASHBOARD =
+  "metabase/dashboard/SET_ARCHIVED_DASHBOARD";
+export const setArchivedDashboard = createThunkAction(
+  SET_ARCHIVED_DASHBOARD,
+  function (archived = true, undoing = false) {
+    return async function (dispatch, getState) {
+      const { dashboardId, dashboards, dashcards } = getState().dashboard;
+      const dashboard = dashboardId
+        ? dashboards[dashboardId]
+        : { name: "Dashboard" };
+
+      await runRtkEndpoint(
+        { id: dashboardId, archived },
+        dispatch,
+        dashboardApi.endpoints.updateDashboard,
+      );
+
+      if (!undoing) {
+        dispatch(
+          addUndo({
+            message: getTrashUndoMessage(dashboard.name, archived),
+            action: () => dispatch(setArchivedDashboard(!archived, true)),
+          }),
+        );
+      }
+
+      if (!dashboardId) {
+        throw new Error("Could not archive current dashboard as there is none");
+      }
+
+      await dispatch(
+        fetchDashboard({
+          dashId: String(dashboardId),
+          queryParams: {},
+          options: { preserveParameters: true },
+        }),
+      );
+
+      const dashboardQuestionIds = Object.values(dashcards)
+        .filter((dc) => _.isNumber(dc.card.dashboard_id))
+        .map((dc) => dc.card_id);
+
+      // HACK: workaround for entity system as it has stale values for dashboard questions
+      // that are now archived due to the dashboard itself being archived
+      try {
+        await Promise.all(
+          _.uniq(dashboardQuestionIds).map((id) =>
+            runRtkEndpoint({ id }, dispatch, cardApi.endpoints.getCard),
+          ),
+        );
+      } catch (err) {
+        console.error(err);
+      }
+    };
+  },
+);
+
+// just using the entity action doesn't cause the dashboard to live update
+// calling fetchDashboard ensures that the view updates with the last values
+export const MOVE_DASHBOARD_TO_COLLECTION =
+  "metabase/dashboard/MOVE_DASHBOARD_TO_COLLECTION";
+export const moveDashboardToCollection = createThunkAction(
+  MOVE_DASHBOARD_TO_COLLECTION,
+  function (collection, forceArchive = undefined, undoing = false) {
+    return async function (dispatch, getState) {
+      const dashboardView = getState().dashboard;
+      const dashboard = dashboardView.dashboardId
+        ? dashboardView.dashboards?.[dashboardView.dashboardId]
+        : null;
+
+      if (!dashboard) {
+        console.error(
+          `${MOVE_DASHBOARD_TO_COLLECTION} failed due to no dashboard set in state`,
+        );
+        return;
+      }
+
+      const { id, archived, collection_id: current_collection_id } = dashboard;
+
+      await runRtkEndpoint(
+        {
+          id,
+          collection_id: canonicalCollectionId(collection && collection.id),
+          archived: forceArchive ?? false,
+        },
+        dispatch,
+        dashboardApi.endpoints.updateDashboard,
+      );
+
+      if (!undoing) {
+        dispatch(
+          addUndo({
+            subject: t`dashboard`,
+            verb: t`moved`,
+            action: () =>
+              dispatch(
+                moveDashboardToCollection(
+                  { id: current_collection_id },
+                  archived,
+                  true,
+                ),
+              ),
+          }),
+        );
+      }
+
+      dispatch(
+        fetchDashboard({
+          dashId: String(id),
+          queryParams: {},
+          options: { preserveParameters: true },
+        }),
+      );
+    };
+  },
+);

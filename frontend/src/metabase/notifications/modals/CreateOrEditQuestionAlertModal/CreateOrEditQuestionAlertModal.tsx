@@ -1,0 +1,457 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { P, match } from "ts-pattern";
+import { t } from "ttag";
+import { isEqual } from "underscore";
+
+import {
+  useCreateNotificationMutation,
+  useGetChannelInfoQuery,
+  useListChannelsQuery,
+  useSendUnsavedNotificationMutation,
+  useUpdateNotificationMutation,
+} from "metabase/api";
+import CS from "metabase/css/core/index.css";
+import { isEmbeddingSdk } from "metabase/embedding-sdk/config";
+import {
+  alertIsValid,
+  getAlertTriggerOptions,
+  getDefaultQuestionAlertRequest,
+} from "metabase/notifications/utils";
+import {
+  getHasConfiguredAnyChannel,
+  getHasConfiguredEmailOrSlackChannel,
+} from "metabase/pulse";
+import { useDispatch, useSelector } from "metabase/redux";
+import { addUndo } from "metabase/redux/undo";
+import {
+  canAccessSettings,
+  getUser,
+  getUserIsAdmin,
+} from "metabase/selectors/user";
+import {
+  Button,
+  Flex,
+  Modal,
+  Paper,
+  Select,
+  Stack,
+  Switch,
+  Text,
+  rem,
+} from "metabase/ui";
+import { getResponseErrorMessage } from "metabase/utils/errors";
+import type Question from "metabase-lib/v1/Question";
+import type {
+  AdminNotification,
+  CreateAlertNotificationRequest,
+  Notification,
+  NotificationCardSendCondition,
+  NotificationCronSubscription,
+  NotificationHandler,
+  ScheduleType,
+  UpdateAlertNotificationRequest,
+  UserId,
+  VisualizationSettings,
+} from "metabase-types/api";
+
+import { ChannelSetupModal } from "../ChannelSetupModal";
+import { NotificationChannelsPicker } from "../components/NotificationChannelsPicker";
+
+import { AlertTriggerIcon } from "./AlertTriggerIcon";
+import { AlertModalSettingsBlock } from "./components/AlertModalSettingsBlock/AlertModalSettingsBlock";
+import { NotificationOwner } from "./components/NotificationOwner/NotificationOwner";
+import { NotificationSchedule } from "./components/NotificationSchedule/NotificationSchedule";
+import type { NotificationTriggerOption } from "./types";
+
+function getAlertTriggerOptionsMap(
+  question: Question | undefined,
+): Record<NotificationCardSendCondition, NotificationTriggerOption> {
+  const isMetric = question?.type() === "metric";
+  return {
+    has_result: {
+      value: "has_result" as const,
+      label: isMetric
+        ? t`When this metric has results`
+        : t`When this question has results`,
+    },
+    goal_above: {
+      value: "goal_above" as const,
+      label: t`When results go above the goal`,
+    },
+    goal_below: {
+      value: "goal_below" as const,
+      label: t`When results go below the goal`,
+    },
+  };
+}
+
+const ALERT_SCHEDULE_OPTIONS: ScheduleType[] = [
+  "every_n_minutes",
+  "hourly",
+  "daily",
+  "weekly",
+  "monthly",
+  "cron",
+];
+
+type CreateOrEditQuestionAlertModalProps = {
+  onClose: () => void;
+  question: Question;
+  /**
+   * The question's effective visualization settings, when the host has them
+   * (e.g. the query builder, where they may include unsaved changes). When
+   * omitted, goal-based trigger detection falls back to the question's saved
+   * settings (see getAlertType).
+   */
+  visualizationSettings?: VisualizationSettings;
+} & (
+  | {
+      editingNotification?: undefined;
+      onAlertCreated: () => void;
+      onAlertUpdated?: () => void;
+    }
+  | {
+      editingNotification: Notification | AdminNotification;
+      onAlertUpdated: () => void;
+      onAlertCreated?: () => void;
+    }
+);
+
+export const CreateOrEditQuestionAlertModal = ({
+  editingNotification,
+  onAlertCreated,
+  onAlertUpdated,
+  onClose,
+  question,
+  visualizationSettings,
+}: CreateOrEditQuestionAlertModalProps) => {
+  const dispatch = useDispatch();
+  const user = useSelector(getUser);
+  const userCanAccessSettings = useSelector(canAccessSettings);
+  const isAdmin = useSelector(getUserIsAdmin);
+
+  const [notification, setNotification] = useState<
+    CreateAlertNotificationRequest | UpdateAlertNotificationRequest | null
+  >(null);
+
+  const questionId = question.id();
+  const isEditMode = !!editingNotification;
+  const subscription = notification?.subscriptions[0];
+
+  const { data: channelSpec, isLoading: isLoadingChannelInfo } =
+    useGetChannelInfoQuery();
+  const { data: hookChannels } = useListChannelsQuery();
+
+  const [createNotification, { isLoading: isCreating, error: errorCreating }] =
+    useCreateNotificationMutation();
+  const [updateNotification, { isLoading: isUpdating, error: errorUpdating }] =
+    useUpdateNotificationMutation();
+  const [sendUnsavedNotification, { isLoading }] =
+    useSendUnsavedNotificationMutation();
+
+  const hasConfiguredAnyChannel = getHasConfiguredAnyChannel(channelSpec);
+  const hasConfiguredEmailOrSlackChannel =
+    getHasConfiguredEmailOrSlackChannel(channelSpec);
+
+  const triggerOptions = useMemo(() => {
+    const optionsMap = getAlertTriggerOptionsMap(question);
+    return getAlertTriggerOptions({
+      question,
+      visualizationSettings,
+    }).map((trigger) => optionsMap[trigger]);
+  }, [question, visualizationSettings]);
+
+  const hasSingleTriggerOption = triggerOptions.length === 1;
+
+  useEffect(() => {
+    if (questionId && channelSpec && user && hookChannels && !notification) {
+      setNotification(
+        isEditMode
+          ? { ...editingNotification }
+          : getDefaultQuestionAlertRequest({
+              cardId: questionId,
+              currentUserId: user.id,
+              channelSpec,
+              hookChannels,
+              availableTriggerOptions: triggerOptions,
+              userCanAccessSettings,
+            }),
+      );
+    }
+  }, [
+    notification,
+    channelSpec,
+    questionId,
+    triggerOptions,
+    user,
+    editingNotification,
+    isEditMode,
+    hookChannels,
+    userCanAccessSettings,
+  ]);
+
+  const handleOwnerChange = (creatorId: UserId) => {
+    if (notification) {
+      setNotification({ ...notification, creator_id: creatorId });
+    }
+  };
+
+  const onCreateOrEditAlert = async () => {
+    if (notification) {
+      let result;
+
+      if (isEditMode) {
+        result = await updateNotification(
+          notification as UpdateAlertNotificationRequest, // TODO: remove typecast
+        );
+      } else {
+        result = await createNotification(notification);
+      }
+
+      if (result.error) {
+        const errorText =
+          getResponseErrorMessage(result.error) ?? t`An error occurred`;
+
+        dispatch(
+          addUndo({
+            icon: "warning",
+            toastColor: "feedback-negative",
+            message: t`Failed save alert. ${errorText}`,
+          }),
+        );
+
+        return;
+      }
+
+      dispatch(
+        addUndo({
+          message: isEditMode
+            ? t`Your alert was updated.`
+            : t`Your alert is all set up.`,
+        }),
+      );
+
+      if (isEditMode) {
+        onAlertUpdated();
+      } else {
+        onAlertCreated();
+      }
+    }
+  };
+
+  const onSendNow = async () => {
+    if (notification) {
+      const result = await sendUnsavedNotification(notification);
+
+      if (result.error) {
+        dispatch(
+          addUndo({
+            icon: "warning",
+            toastColor: "feedback-negative",
+            message: t`Failed to send test alert. ${getResponseErrorMessage(result.error) ?? t`An error occurred`}`,
+          }),
+        );
+      }
+    }
+  };
+
+  const channelRequirementsMet = userCanAccessSettings
+    ? hasConfiguredAnyChannel
+    : hasConfiguredEmailOrSlackChannel; // webhooks are available only for users with "Settings access" permission - WRK-63
+
+  const handleScheduleChange = useCallback(
+    (updatedSubscription: NotificationCronSubscription) => {
+      if (!subscription) {
+        return;
+      }
+
+      setNotification({
+        ...notification,
+        subscriptions: [updatedSubscription],
+      });
+    },
+    [setNotification, subscription, notification],
+  );
+
+  if (!isLoadingChannelInfo && channelSpec && !channelRequirementsMet) {
+    return (
+      <ChannelSetupModal
+        userCanAccessSettings={userCanAccessSettings}
+        onClose={onClose}
+      />
+    );
+  }
+
+  if (!notification || !subscription) {
+    return null;
+  }
+
+  const isValid = alertIsValid(notification, channelSpec);
+  const hasChanges = !isEqual(editingNotification, notification);
+  const hasError = errorCreating || errorUpdating;
+
+  const submitButtonLabel = match({
+    hasError,
+    isEditMode,
+    hasChanges,
+  })
+    .with({ hasError: P.nonNullable }, () => t`Save failed`)
+    .with({ isEditMode: true, hasChanges: true }, () => t`Save changes`)
+    .otherwise(() => t`Done`);
+
+  return (
+    <Modal
+      data-testid="alert-create"
+      opened
+      size={rem(680)}
+      onClose={onClose}
+      padding="2.5rem"
+      title={isEditMode ? t`Edit alert` : t`New alert`}
+      styles={{
+        body: {
+          paddingLeft: 0,
+          paddingRight: 0,
+          paddingBottom: "1.5rem",
+        },
+      }}
+    >
+      <Stack gap="xl" mt="1.5rem" mb="2rem" px="2.5rem">
+        <AlertModalSettingsBlock
+          title={t`What do you want to be alerted about?`}
+        >
+          <Flex gap="lg" align="center">
+            <AlertTriggerIcon />
+            {hasSingleTriggerOption ? (
+              <Paper
+                data-testid="alert-goal-select"
+                withBorder
+                shadow="none"
+                py="sm"
+                px="1.5rem"
+                bg="transparent"
+              >
+                <Text>{triggerOptions[0].label}</Text>
+              </Paper>
+            ) : (
+              <Select
+                data-testid="alert-goal-select"
+                data={triggerOptions}
+                value={notification.payload?.send_condition}
+                w={276}
+                onChange={(value) => {
+                  setNotification({
+                    ...notification,
+                    payload: {
+                      ...notification.payload,
+                      card_id: notification.payload?.card_id ?? questionId,
+                      send_condition: value,
+                      send_once: false,
+                    },
+                  });
+                }}
+              />
+            )}
+          </Flex>
+        </AlertModalSettingsBlock>
+        <AlertModalSettingsBlock
+          title={t`When do you want to check this?`}
+          style={{
+            "--alert-modal-content-padding": "0",
+          }}
+        >
+          <NotificationSchedule
+            subscription={subscription}
+            scheduleOptions={ALERT_SCHEDULE_OPTIONS}
+            onScheduleChange={handleScheduleChange}
+          />
+        </AlertModalSettingsBlock>
+        {!isEmbeddingSdk() && (
+          <AlertModalSettingsBlock
+            title={t`Where do you want to send the results?`}
+          >
+            <NotificationChannelsPicker
+              notificationHandlers={notification.handlers}
+              channels={channelSpec ? channelSpec.channels : undefined}
+              onChange={(newHandlers: NotificationHandler[]) => {
+                setNotification({
+                  ...notification,
+                  handlers: newHandlers,
+                });
+              }}
+              emailRecipientText={t`Email alerts to:`}
+              getInvalidRecipientText={(domains) =>
+                userCanAccessSettings
+                  ? t`You're only allowed to email alerts to addresses ending in ${domains}`
+                  : t`You're only allowed to email alerts to allowed domains`
+              }
+            />
+          </AlertModalSettingsBlock>
+        )}
+
+        {isEditMode && isAdmin && editingNotification && (
+          <AlertModalSettingsBlock title={t`Who owns this alert?`}>
+            <NotificationOwner
+              editingNotification={editingNotification}
+              onChange={handleOwnerChange}
+            />
+          </AlertModalSettingsBlock>
+        )}
+
+        <AlertModalSettingsBlock title={t`More options`}>
+          <Switch
+            label={t`Delete this Alert after it's triggered`}
+            styles={{
+              label: {
+                lineHeight: "1.5rem",
+              },
+            }}
+            labelPosition="right"
+            size="sm"
+            checked={notification.payload?.send_once}
+            onChange={(event) => {
+              setNotification({
+                ...notification,
+                payload: {
+                  ...notification.payload,
+                  card_id: notification.payload?.card_id ?? questionId,
+                  send_condition:
+                    notification.payload?.send_condition ??
+                    triggerOptions[0].value,
+                  send_once: event.target.checked,
+                },
+              });
+            }}
+          />
+        </AlertModalSettingsBlock>
+      </Stack>
+      <Flex
+        justify="space-between"
+        align="center"
+        px="2.5rem"
+        pt="lg"
+        className={CS.borderTop}
+      >
+        <Button
+          variant="outline"
+          color="core-brand"
+          loading={isLoading}
+          onClick={onSendNow}
+        >
+          {isLoading ? t`Sending…` : t`Send now`}
+        </Button>
+        <Flex align="center" gap="sm">
+          <Button onClick={onClose}>{t`Cancel`}</Button>
+          <Button
+            variant="filled"
+            bg={hasError ? "feedback-negative" : "core-brand"}
+            disabled={!isValid || isCreating || isUpdating}
+            loading={isCreating || isUpdating}
+            onClick={onCreateOrEditAlert}
+          >
+            {submitButtonLabel}
+          </Button>
+        </Flex>
+      </Flex>
+    </Modal>
+  );
+};

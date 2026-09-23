@@ -1,0 +1,1142 @@
+(ns ^:mb/driver-tests metabase.driver.sqlserver-test
+  {:clj-kondo/config '{:linters {:deprecated-var {:exclude {metabase.test.data/mbql-query {:namespaces [metabase.driver.sqlserver-test]}
+                                                            metabase.test.data/run-mbql-query {:namespaces [metabase.driver.sqlserver-test]}}}}}}
+  (:require
+   [clojure.string :as str]
+   [clojure.test :refer :all]
+   [colorize.core :as colorize]
+   [honey.sql :as sql]
+   [java-time.api :as t]
+   [metabase.config.core :as config]
+   [metabase.driver :as driver]
+   [metabase.driver-api.core :as driver-api]
+   [metabase.driver.common :as driver.common]
+   [metabase.driver.sql :as driver.sql]
+   [metabase.driver.sql-jdbc :as driver.sql-jdbc]
+   [metabase.driver.sql-jdbc.connection :as sql-jdbc.conn]
+   [metabase.driver.sql-jdbc.execute :as sql-jdbc.execute]
+   [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
+   [metabase.driver.sql.query-processor :as sql.qp]
+   [metabase.driver.sqlserver :as sqlserver]
+   [metabase.lib.core :as lib]
+   [metabase.lib.metadata :as lib.metadata]
+   [metabase.query-processor.compile :as qp.compile]
+   [metabase.query-processor.middleware.limit :as limit]
+   [metabase.query-processor.preprocess :as qp.preprocess]
+   ^{:clj-kondo/ignore [:deprecated-namespace]} [metabase.query-processor.store :as qp.store]
+   [metabase.query-processor.test :as qp]
+   [metabase.query-processor.test-util :as qp.test-util]
+   [metabase.query-processor.timezone :as qp.timezone]
+   [metabase.test :as mt]
+   [metabase.test.util.timezone :as test.tz]
+   [metabase.util :as u]
+   [metabase.util.date-2 :as u.date]
+   [metabase.util.honey-sql-2 :as h2x]
+   [next.jdbc]
+   [toucan2.core :as t2]))
+
+(set! *warn-on-reflection* true)
+
+(deftest ^:parallel hour-bucketing-time-without-database-type-test
+  (testing (str "Hour bucketing on a TIME-typed expression without `:database-type` (as happens for "
+                "fields referenced by name from a source query, #75193) should use TIMEFROMPARTS and "
+                "not produce a DATETIME2FROMPARTS result that requires a date component")
+    (let [expr (h2x/with-type-info :test_col {:effective-type :type/Time})]
+      (is (= ["TIMEFROMPARTS(DATEPART(hour, \"test_col\"), 0, 0, 0, 0)"]
+             (sql.qp/format-honeysql :sqlserver (sql.qp/date :sqlserver :hour expr)))))))
+
+(deftest relative-datetime-against-datetimeoffset-uses-report-timezone-test
+  (testing (str "When a `:relative-datetime` filter value is compared against a `datetimeoffset` column, the value "
+                "must be tagged with the report timezone. Otherwise SQL Server implicitly treats the naive "
+                "`datetime2` result as offset +00:00 during the comparison, shifting the filter window by the "
+                "report tz offset (#78612).")
+    (driver/with-driver :sqlserver
+      (qp.test-util/with-report-timezone-id! "Pacific/Auckland"
+        (let [today    [:relative-datetime 0 :day]
+              tomorrow [:relative-datetime 1 :day]]
+          (testing "datetimeoffset LHS: RHS is wrapped in AT TIME ZONE '<report-tz-windows-name>'"
+            (binding [sql.qp/*parent-honeysql-col-type-info* {:database-type  "datetimeoffset"
+                                                              :effective-type :type/DateTimeWithZoneOffset}]
+              (is (= [(str "(CAST(DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), DAY(GETDATE())) AS datetime2)"
+                           " AT TIME ZONE 'New Zealand Standard Time')")]
+                     (sql.qp/format-honeysql :sqlserver (sql.qp/->honeysql :sqlserver today))))
+              (is (= [(str "(CAST(DATEFROMPARTS(YEAR(DATEADD(day, 1, GETDATE())),"
+                           " MONTH(DATEADD(day, 1, GETDATE())),"
+                           " DAY(DATEADD(day, 1, GETDATE()))) AS datetime2)"
+                           " AT TIME ZONE 'New Zealand Standard Time')")]
+                     (sql.qp/format-honeysql :sqlserver (sql.qp/->honeysql :sqlserver tomorrow))))))
+          (testing "plain datetime2 LHS: RHS is unchanged (no AT TIME ZONE wrap)"
+            (binding [sql.qp/*parent-honeysql-col-type-info* {:database-type  "datetime2"
+                                                              :effective-type :type/DateTime}]
+              (is (= ["CAST(DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), DAY(GETDATE())) AS datetime2)"]
+                     (sql.qp/format-honeysql :sqlserver (sql.qp/->honeysql :sqlserver today))))))))
+      (testing "with no report timezone set, RHS is unchanged even for a datetimeoffset LHS (nothing to attach)"
+        (qp.test-util/with-report-timezone-id! nil
+          (binding [sql.qp/*parent-honeysql-col-type-info* {:database-type  "datetimeoffset"
+                                                            :effective-type :type/DateTimeWithZoneOffset}]
+            (is (= ["CAST(DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), DAY(GETDATE())) AS datetime2)"]
+                   (sql.qp/format-honeysql
+                    :sqlserver
+                    (sql.qp/->honeysql :sqlserver
+                                       [:relative-datetime 0 :day]))))))))))
+
+(deftest absolute-datetime-against-datetimeoffset-uses-report-timezone-test
+  (testing (str "`:absolute-datetime` filter values compared against a `datetimeoffset` column suffer the same "
+                "class of bug as `:relative-datetime` (#78612): a naive `datetime2` RHS is silently treated as "
+                "offset +00:00 during the comparison. Attach the report timezone to the naive literal.")
+    (driver/with-driver :sqlserver
+      (let [today [:absolute-datetime (t/local-date 2026 8 2) :day]]
+        (qp.test-util/with-report-timezone-id! "Pacific/Auckland"
+          (testing "datetimeoffset LHS: RHS is wrapped in AT TIME ZONE '<report-tz-windows-name>'"
+            (binding [sql.qp/*parent-honeysql-col-type-info* {:database-type  "datetimeoffset"
+                                                              :effective-type :type/DateTimeWithZoneOffset}]
+              (is (= [(str "(CAST(DATEFROMPARTS(YEAR(?), MONTH(?), DAY(?)) AS datetime2)"
+                           " AT TIME ZONE 'New Zealand Standard Time')")
+                      (t/local-date 2026 8 2)
+                      (t/local-date 2026 8 2)
+                      (t/local-date 2026 8 2)]
+                     (sql.qp/format-honeysql :sqlserver (sql.qp/->honeysql :sqlserver today))))))
+          (testing "plain datetime2 LHS: RHS is unchanged (no AT TIME ZONE wrap)"
+            (binding [sql.qp/*parent-honeysql-col-type-info* {:database-type  "datetime2"
+                                                              :effective-type :type/DateTime}]
+              (is (= ["CAST(DATEFROMPARTS(YEAR(?), MONTH(?), DAY(?)) AS datetime2)"
+                      (t/local-date 2026 8 2)
+                      (t/local-date 2026 8 2)
+                      (t/local-date 2026 8 2)]
+                     (sql.qp/format-honeysql :sqlserver (sql.qp/->honeysql :sqlserver today)))))))
+        (testing "with no report timezone set, RHS is unchanged even for a datetimeoffset LHS (nothing to attach)"
+          (qp.test-util/with-report-timezone-id! nil
+            (binding [sql.qp/*parent-honeysql-col-type-info* {:database-type  "datetimeoffset"
+                                                              :effective-type :type/DateTimeWithZoneOffset}]
+              (is (= ["CAST(DATEFROMPARTS(YEAR(?), MONTH(?), DAY(?)) AS datetime2)"
+                      (t/local-date 2026 8 2)
+                      (t/local-date 2026 8 2)
+                      (t/local-date 2026 8 2)]
+                     (sql.qp/format-honeysql :sqlserver (sql.qp/->honeysql :sqlserver today)))))))))))
+
+(deftest ^:parallel fix-order-bys-test
+  (testing "Remove order-by from joins"
+    (let [original {:joins [{:alias        "C3"
+                             :source-query {:source-table 1
+                                            :order-by     [[:asc [:field 2 nil]]]}}
+                            {:alias        "C4"
+                             :source-query {:source-table 1
+                                            :order-by     [[:asc [:field 2 nil]]]
+                                            :limit        10}}]}
+          expected {:joins [{:alias        "C3"
+                             :source-query {:source-table 1}}
+                            {:alias        "C4"
+                             :source-query {:source-table 1
+                                            :order-by     [[:asc [:field 2 nil]]]
+                                            :limit        10}}]}]
+      (is (= expected
+             (#'sqlserver/fix-order-bys original)))
+      (testing "Inside `:source-query`"
+        (is (= {:source-query expected}
+               (#'sqlserver/fix-order-bys {:source-query original})))))))
+
+(deftest ^:parallel fix-order-bys-test-2
+  (testing "Add limit for :source-query order bys"
+    (mt/$ids nil
+      (let [original {:source-table 1
+                      :order-by     [[:asc 2]]}]
+        (testing "Not in a source query -- don't do anything"
+          (is (= original
+                 (#'sqlserver/fix-order-bys original))))
+        (testing "In source query -- add `:limit`"
+          (is (= {:source-query (assoc original :limit limit/absolute-max-results)}
+                 (#'sqlserver/fix-order-bys {:source-query original}))))
+        (testing "In source query in source query-- add `:limit` at both levels"
+          (is (= {:source-query {:source-query (assoc original :limit limit/absolute-max-results)
+                                 :order-by     [[:asc [:field 1]]]
+                                 :limit        limit/absolute-max-results}}
+                 (#'sqlserver/fix-order-bys {:source-query {:source-query original
+                                                            :order-by     [[:asc [:field 1]]]}}))))
+        (testing "In source query inside source query for join -- add `:limit`"
+          (is (= {:joins [{:source-query {:source-query (assoc original :limit limit/absolute-max-results)}}]}
+                 (#'sqlserver/fix-order-bys
+                  {:joins [{:source-query {:source-query original}}]}))))))))
+
+;;; -------------------------------------------------- VARCHAR(MAX) --------------------------------------------------
+
+(defn- a-gene
+  "Really long string representing a gene like \"GGAGCACCTCCACAAGTGCAGGCTATCCTGTCGAGTAAGGCCT...\""
+  []
+  (apply str (repeatedly 1000 (partial rand-nth [\A \G \C \T]))))
+
+(mt/defdataset ^:private genetic-data
+  [["genetic-data"
+    [{:field-name "gene", :base-type {:native "VARCHAR(MAX)"}, :effective-type :type/Text}]
+    [[(a-gene)]]]])
+
+(deftest ^:parallel clobs-should-come-back-as-text-test
+  (mt/test-driver :sqlserver
+    (testing "Make sure something long doesn't come back as some weird type like `ClobImpl`"
+      (is (= [[1 (-> genetic-data :table-definitions first :rows ffirst)]]
+             (-> (mt/dataset genetic-data (mt/run-mbql-query genetic-data))
+                 mt/rows
+                 mt/obj->json->obj)))))) ; convert to JSON + back so the Clob gets stringified
+
+(deftest ^:parallel connection-spec-test
+  (testing "Test that additional connection string options work (#5296)"
+    (is (= {:applicationName    (format
+                                 "Metabase %s [%s]"
+                                 (or (:tag config/mb-version-info) "")
+                                 config/local-process-uuid)
+            :database           "birddb"
+            :encrypt            false
+            :loginTimeout       10
+            :password           "toucans"
+            :port               1433
+            :sendTimeAsDatetime false
+            :subname            "//localhost;trustServerCertificate=false"
+            :subprotocol        "sqlserver"
+            :user               "cam"}
+           (sql-jdbc.conn/connection-details->spec :sqlserver
+                                                   {:user               "cam"
+                                                    :password           "toucans"
+                                                    :db                 "birddb"
+                                                    :host               "localhost"
+                                                    :port               1433
+                                                    :additional-options "trustServerCertificate=false"}))))
+  (testing "instanceName is omitted when no instance is supplied — mssql-jdbc treats an empty string as a named instance, which breaks Microsoft Fabric and Synapse serverless endpoints (#81270)"
+    (doseq [instance [nil "" "   "]]
+      (testing (pr-str instance)
+        (is (not (contains? (sql-jdbc.conn/connection-details->spec :sqlserver
+                                                                    {:user "cam", :password "toucans", :db "birddb",
+                                                                     :host "localhost", :port 1433, :instance instance})
+                            :instanceName))))))
+  (testing "instanceName is passed through when the user supplies one"
+    (is (= "MYINSTANCE"
+           (:instanceName (sql-jdbc.conn/connection-details->spec :sqlserver
+                                                                  {:user "cam", :password "toucans", :db "birddb",
+                                                                   :host "localhost", :instance "MYINSTANCE"}))))))
+
+(deftest ^:parallel reject-details-with-dangerous-additional-options-test
+  (mt/test-driver :sqlserver
+    (let [details (:details (mt/db))]
+      (testing "db details with potentially dangerous additional options are rejected"
+        (are [bad-option] (let [bad-opts-details (assoc details :additional-options bad-option)
+                                bad-host-details (update details :host str ";" bad-option)]
+                            (is (thrown-with-msg? java.lang.Exception
+                                                  #"Potentially dangerous keys in connection details"
+                                                  (driver/can-connect? :sqlserver bad-opts-details)))
+                            (is (thrown-with-msg? java.lang.Exception
+                                                  #"Potentially dangerous keys in connection details"
+                                                  (driver/can-connect? :sqlserver bad-host-details))))
+          "socketFactoryClass=bad.Factory"
+          "socketFactoryConstructorArg=bad"
+          "trustManagerClass=bad.TrustManager"
+          "trustManagerConstructorArg=/etc/passwd"
+          "accessTokenCallbackClass=bad.Callback"
+          "socketfactoryclass=bad.Factory"
+          "SOCKETFACTORYCLASS=bad.Factory"
+          "socketFactoryClass=bad.Factory;socketFactoryConstructorArg=bad"
+          "socketFactoryClass=bad.Factory;trustServerCertificate=false"
+          "trustServerCertificate=false;socketFactoryClass=bad.Factory"))
+      (testing "db details without potentially dangerous options are accepted"
+        (are [options] (let [details (assoc details :additional-options options)]
+                         (is (true? (driver/can-connect? :sqlserver details))))
+          nil
+          ""
+          " "
+          "trustServerCertificate=false"
+          "trustStore=/path/to/store;trustStorePassword=password;trustStoreType=pkcs12")))))
+
+(deftest ^:parallel add-max-results-limit-test
+  (mt/test-driver :sqlserver
+    (testing (str "SQL Server doesn't let you use ORDER BY in nested SELECTs unless you also specify a TOP (their "
+                  "equivalent of LIMIT). Make sure we add a max-results LIMIT to the nested query")
+      (is (= {:query ["SELECT"
+                      "  TOP(1048575) \"__mb_source\".\"name\" AS \"name\""
+                      "FROM"
+                      "  ("
+                      "    SELECT"
+                      "      TOP(1048575) \"dbo\".\"venues\".\"name\" AS \"name\""
+                      "    FROM"
+                      "      \"dbo\".\"venues\""
+                      "    ORDER BY"
+                      "      \"dbo\".\"venues\".\"id\" ASC"
+                      "  ) AS \"__mb_source\""]
+              :params nil}
+             (-> (mt/mbql-query venues
+                   {:source-query {:source-table $$venues
+                                   :fields       [$name]
+                                   :order-by     [[:asc $id]]}})
+                 qp.compile/compile
+                 (update :query #(str/split-lines (driver/prettify-native-form :sqlserver %)))))))))
+
+(deftest ^:parallel preserve-existing-top-clauses
+  (mt/test-driver :sqlserver
+    (testing (str "make sure when adding TOP clauses to make ORDER BY work we don't stomp over any explicit TOP "
+                  "clauses that may have been set in the query")
+      (is (= {:query  ["SELECT"
+                       "  TOP(10) \"__mb_source\".\"name\" AS \"name\""
+                       "FROM"
+                       "  ("
+                       "    SELECT"
+                       "      TOP(20) \"dbo\".\"venues\".\"name\" AS \"name\""
+                       "    FROM"
+                       "      \"dbo\".\"venues\""
+                       "    ORDER BY"
+                       "      \"dbo\".\"venues\".\"id\" ASC"
+                       "  ) AS \"__mb_source\""]
+              :params nil}
+             (-> (qp.compile/compile
+                  (mt/mbql-query venues
+                    {:source-query {:source-table $$venues
+                                    :fields       [$name]
+                                    :order-by     [[:asc $id]]
+                                    :limit        20}
+                     :limit        10}))
+                 (update :query #(str/split-lines (driver/prettify-native-form :sqlserver %)))))))))
+
+(deftest ^:parallel dont-add-top-clauses-for-top-level-test
+  (mt/test-driver :sqlserver
+    (testing (str "We don't need to add TOP clauses for top-level order by. Normally we always add one anyway because "
+                  "of the max-results stuff, but make sure our impl doesn't add one when it's not in the source MBQL")
+      ;; in order to actually see how things would work without the implicit max-results limit added we'll preprocess
+      ;; the query, strip off the `:limit` that got added, and then feed it back to the QP where we left off
+      (let [preprocessed (-> (mt/mbql-query venues
+                               {:source-query {:source-table $$venues
+                                               :fields       [$name]
+                                               :order-by     [[:asc $id]]}
+                                :order-by     [[:asc $id]]})
+                             qp.preprocess/preprocess
+                             (lib/limit nil))]
+        (mt/with-metadata-provider (mt/id)
+          (is (= {:query  ["SELECT"
+                           "  \"__mb_source\".\"name\" AS \"name\""
+                           "FROM"
+                           "  ("
+                           "    SELECT"
+                           "      TOP(1048575) \"dbo\".\"venues\".\"name\" AS \"name\""
+                           "    FROM"
+                           "      \"dbo\".\"venues\""
+                           "    ORDER BY"
+                           "      \"dbo\".\"venues\".\"id\" ASC"
+                           "  ) AS \"__mb_source\""
+                           "ORDER BY"
+                           "  \"__mb_source\".\"id\" ASC"]
+                  :params nil}
+                 (-> (driver/mbql->native :sqlserver preprocessed)
+                     (update :query (fn [sql]
+                                      (str/split-lines (driver/prettify-native-form :sqlserver sql))))))))))))
+
+(deftest ^:parallel max-results-should-actually-work-test
+  (mt/test-driver :sqlserver
+    (testing "ok, generating all that SQL above is nice, but let's make sure our queries actually work!"
+      (is (= [["Red Medicine"]
+              ["Stout Burgers & Beers"]
+              ["The Apple Pan"]]
+             (mt/rows
+              (qp/process-query
+               (mt/mbql-query venues
+                 {:source-query {:source-table $$venues
+                                 :fields       [$name]
+                                 :order-by     [[:asc $id]]
+                                 :limit        5}
+                  :limit        3}))))))))
+
+(deftest ^:parallel page-adds-order-by-when-none-present-test
+  (testing "Regression for #81988."
+    (testing "no existing ORDER BY -> synthetic ORDER BY (SELECT NULL) added"
+      (is (= {:order-by [[{:select [nil]}]]
+              :offset   [:inline 0]
+              :fetch    [:inline 200]}
+             (sql.qp/apply-top-level-clause :sqlserver :page {}
+                                            {:page {:page 1 :items 200}}))))
+    (testing "existing ORDER BY preserved"
+      (let [existing-order-by [[[:field "id" nil] :asc]]]
+        (is (= {:order-by existing-order-by
+                :offset   [:inline 0]
+                :fetch    [:inline 200]}
+               (sql.qp/apply-top-level-clause :sqlserver :page
+                                              {:order-by existing-order-by}
+                                              {:page {:page 1 :items 200}})))))
+    (testing "later pages compute OFFSET from (page - 1) * items"
+      (is (= {:order-by [[{:select [nil]}]]
+              :offset   [:inline 400]
+              :fetch    [:inline 200]}
+             (sql.qp/apply-top-level-clause :sqlserver :page {}
+                                            {:page {:page 3 :items 200}}))))))
+
+(deftest ^:parallel locale-bucketing-test
+  (mt/test-driver :sqlserver
+    (testing (str "Make sure datetime bucketing functions work properly with languages that format dates like "
+                  "yyyy-dd-MM instead of yyyy-MM-dd (i.e. not American English) (#9057)")
+      ;; we're doing things here with low-level calls to HoneySQL (emulating what the QP does) instead of using normal
+      ;; QP pathways because `SET LANGUAGE` doesn't seem to persist to subsequent executions so to test that things
+      ;; are working we need to add to in from of the query we're trying to check
+      (sql-jdbc.execute/do-with-connection-with-options
+       :sqlserver
+       (mt/db)
+       {:session-timezone (qp.timezone/report-timezone-id-if-supported :sqlserver (mt/db))}
+       (fn [^java.sql.Connection conn]
+         (.setAutoCommit conn false)
+         (try
+           (doseq [[sql & params] [["DROP TABLE IF EXISTS temp;"]
+                                   ["CREATE TABLE temp (d DATETIME2);"]
+                                   ["INSERT INTO temp (d) VALUES (?)" #t "2019-02-08T00:00:00Z"]
+                                   ["SET LANGUAGE Italian;"]]]
+             (with-open [stmt (sql-jdbc.execute/prepared-statement :sqlserver conn sql params)]
+               (.execute stmt)))
+           (let [[sql & params] (sql/format {:select [[(sql.qp/date :sqlserver :month :temp.d) :my-date]]
+                                             :from   [:temp]}
+                                            :dialect :ansi, :allow-dashed-names? true)]
+             (with-open [stmt (sql-jdbc.execute/prepared-statement :sqlserver conn sql params)
+                         rs   (sql-jdbc.execute/execute-prepared-statement! :sqlserver stmt)]
+               (let [row-thunk (sql-jdbc.execute/row-thunk :sqlserver rs (.getMetaData rs))]
+                 (is (= [#t "2019-02-01T00:00:00"]
+                        (row-thunk))))))
+           ;; rollback transaction so `temp` table gets discarded
+           (finally
+             (.rollback conn))))))))
+
+(deftest ^:parallel locale-week-test
+  (mt/test-driver :sqlserver
+    (testing "Make sure aggregating by week starts weeks on the appropriate day regardless of the value of DATEFIRST"
+      ;; we're manually sending sql to the database instead of using process-query because setting DATEFIRST doesn't
+      ;; persist otherwise
+      (sql-jdbc.execute/do-with-connection-with-options
+       :sqlserver
+       (mt/db)
+       {:session-timezone (qp.timezone/report-timezone-id-if-supported :sqlserver (mt/db))}
+       (fn [^java.sql.Connection conn]
+         (doseq [datefirst (range 1 8)]
+           (binding [driver.common/*start-of-week* :sunday]
+             (let [{:keys [query params]} (qp.compile/compile (mt/mbql-query users
+                                                                {:aggregation [["count"]]
+                                                                 :breakout [!week.last_login]
+                                                                 :filter [:= $name "Plato Yeshua"]}))
+                   sql (format "SET DATEFIRST %d; %s" datefirst query)]
+               (with-open [stmt (sql-jdbc.execute/prepared-statement :sqlserver conn sql params)
+                           rs   (sql-jdbc.execute/execute-prepared-statement! :sqlserver stmt)]
+                 (let [row-thunk (sql-jdbc.execute/row-thunk :sqlserver rs (.getMetaData rs))
+                       row (row-thunk)]
+                   (is (= [#t "2014-03-30T00:00" 1]
+                          row))))))))))))
+
+(deftest ^:parallel locale-day-of-week-test
+  (mt/test-driver :sqlserver
+    (testing "Make sure aggregating by day of week starts weeks on the appropriate day regardless of the value of
+    DATEFIRST"
+      ;; we're manually sending sql to the database instead of using process-query because setting DATEFIRST doesn't
+      ;; persist otherwise
+      (sql-jdbc.execute/do-with-connection-with-options
+       :sqlserver
+       (mt/db)
+       {:session-timezone (qp.timezone/report-timezone-id-if-supported :sqlserver (mt/db))}
+       (fn [^java.sql.Connection conn]
+         (doseq [datefirst (range 1 8)]
+           (binding [driver.common/*start-of-week* :sunday]
+             (let [{:keys [query params]} (qp.compile/compile (mt/mbql-query users
+                                                                {:aggregation [["count"]]
+                                                                 :breakout [!day-of-week.last_login]
+                                                                 :filter [:= $name "Plato Yeshua"]}))
+                   sql (format "SET DATEFIRST %d; %s" datefirst query)]
+               (with-open [stmt (sql-jdbc.execute/prepared-statement :sqlserver conn sql params)
+                           rs   (sql-jdbc.execute/execute-prepared-statement! :sqlserver stmt)]
+                 (let [row-thunk (sql-jdbc.execute/row-thunk :sqlserver rs (.getMetaData rs))
+                       row (row-thunk)]
+                   (is (= [3 1]
+                          row))))))))))))
+
+(deftest ^:parallel inline-value-test
+  (mt/test-driver :sqlserver
+    (let [date (t/local-date 2019 11 5)
+          time (t/local-time 19 27)]
+      ;; various types should come out the same as they went in (1 value per tuple) or something functionally
+      ;; equivalent (2 values)
+      (doseq [[t expected] [[date]
+                            [time]
+                            [(t/local-date-time date time)]
+                            ;; SQL server doesn't support OffsetTime, so we should convert it to UTC and then to a
+                            ;; LocalTime (?)
+                            [(t/offset-time time (t/zone-offset -8)) (t/local-time 3 27)]
+                            [(t/offset-date-time (t/local-date-time date time) (t/zone-offset -8))]
+                            ;; since SQL Server doesn't support timezone IDs it should be converted to an offset in
+                            ;; the literal
+                            [(t/zoned-date-time  date time (t/zone-id "America/Los_Angeles"))
+                             (t/offset-date-time (t/local-date-time date time) (t/zone-offset -8))]]]
+        (let [expected (or expected t)]
+          #_{:clj-kondo/ignore [:discouraged-var]}
+          (testing (format "Convert %s to SQL literal" (colorize/magenta (with-out-str (pr t))))
+            (let [sql (format "SELECT %s AS t;" (sql.qp/inline-value :sqlserver t))]
+              (sql-jdbc.execute/do-with-connection-with-options
+               :sqlserver
+               (mt/db)
+               nil
+               (fn [^java.sql.Connection conn]
+                 (with-open [stmt (sql-jdbc.execute/prepared-statement :sqlserver conn sql nil)
+                             rs   (sql-jdbc.execute/execute-prepared-statement! :sqlserver stmt)]
+                   (let [row-thunk (sql-jdbc.execute/row-thunk :sqlserver rs (.getMetaData rs))]
+                     (is (= [expected]
+                            (row-thunk))
+                         (format "SQL %s should return %s" (colorize/blue (pr-str sql)) (colorize/green expected))))))))))))))
+
+(defn- pretty-sql [s]
+  (as-> s s
+    (str/replace s #"\"" "")
+    (driver/prettify-native-form :sqlserver s)
+    (str/split-lines s)))
+
+(deftest ^:parallel optimal-filter-clauses-test
+  (mt/test-driver :sqlserver
+    (testing "Should use efficient functions like year() for date bucketing (#9934)"
+      (letfn [(query-with-bucketing [unit]
+                (mt/mbql-query checkins
+                  {:aggregation [[:count]]
+                   :breakout    [[:field $date {:temporal-unit unit}]]}))]
+        (doseq [[unit {:keys [expected-sql expected-rows]}]
+                {"year"
+                 {:expected-sql
+                  ["SELECT"
+                   "  DATEFROMPARTS(YEAR(dbo.checkins.date), 1, 1) AS date,"
+                   "  COUNT(*) AS count"
+                   "FROM"
+                   "  dbo.checkins"
+                   "GROUP BY"
+                   "  YEAR(dbo.checkins.date)"
+                   "ORDER BY"
+                   "  YEAR(dbo.checkins.date) ASC"]
+
+                  :expected-rows
+                  [["2013-01-01T00:00:00Z" 235]
+                   ["2014-01-01T00:00:00Z" 498]
+                   ["2015-01-01T00:00:00Z" 267]]}
+
+                 "month"
+                 {:expected-sql
+                  ["SELECT"
+                   "  DATEFROMPARTS("
+                   "    YEAR(dbo.checkins.date),"
+                   "    MONTH(dbo.checkins.date),"
+                   "    1"
+                   "  ) AS date,"
+                   "  COUNT(*) AS count"
+                   "FROM"
+                   "  dbo.checkins"
+                   "GROUP BY"
+                   "  YEAR(dbo.checkins.date),"
+                   "  MONTH(dbo.checkins.date)"
+                   "ORDER BY"
+                   "  YEAR(dbo.checkins.date) ASC,"
+                   "  MONTH(dbo.checkins.date) ASC"]
+
+                  :expected-rows
+                  [["2013-01-01T00:00:00Z" 8]
+                   ["2013-02-01T00:00:00Z" 11]
+                   ["2013-03-01T00:00:00Z" 21]
+                   ["2013-04-01T00:00:00Z" 26]
+                   ["2013-05-01T00:00:00Z" 23]]}
+
+                 "day"
+                 {:expected-sql
+                  ["SELECT"
+                   "  DATEFROMPARTS("
+                   "    YEAR(dbo.checkins.date),"
+                   "    MONTH(dbo.checkins.date),"
+                   "    DAY(dbo.checkins.date)"
+                   "  ) AS date,"
+                   "  COUNT(*) AS count"
+                   "FROM"
+                   "  dbo.checkins"
+                   "GROUP BY"
+                   "  YEAR(dbo.checkins.date),"
+                   "  MONTH(dbo.checkins.date),"
+                   "  DAY(dbo.checkins.date)"
+                   "ORDER BY"
+                   "  YEAR(dbo.checkins.date) ASC,"
+                   "  MONTH(dbo.checkins.date) ASC,"
+                   "  DAY(dbo.checkins.date) ASC"]
+
+                  :expected-rows
+                  [["2013-01-03T00:00:00Z" 1]
+                   ["2013-01-10T00:00:00Z" 1]
+                   ["2013-01-19T00:00:00Z" 1]
+                   ["2013-01-22T00:00:00Z" 1]
+                   ["2013-01-23T00:00:00Z" 1]]}}]
+          (testing (format "\nUnit = %s\n" unit)
+            (testing "Should generate the correct SQL query"
+              (is (= expected-sql
+                     (pretty-sql (:query (qp.compile/compile (query-with-bucketing unit)))))))
+            (testing "Should still return correct results"
+              (is (= expected-rows
+                     (take 5 (mt/rows
+                              (mt/run-mbql-query checkins
+                                {:aggregation [[:count]]
+                                 :breakout    [[:field $date {:temporal-unit unit}]]})))))
+              (is (= [:type/Date :type/Integer]
+                     (->> {:aggregation [[:count]]
+                           :breakout    [[:field $date {:temporal-unit unit}]]}
+                          (mt/run-mbql-query checkins)
+                          :data
+                          :results_metadata
+                          :columns
+                          (map :base_type)))))))))))
+
+(deftest ^:parallel truncated-datetime-still-datetime-test
+  (mt/test-driver :sqlserver
+    (testing "When truncating a `:type/DateTime` to a date-sized unit, return datetime"
+      (letfn [(query-with-bucketing [unit]
+                (mt/mbql-query orders
+                  {:aggregation [[:count]]
+                   :breakout    [[:field $created_at {:temporal-unit unit}]]}))]
+        (doseq [[unit {:keys [expected-sql expected-rows]}]
+                {"year"
+                 {:expected-sql
+                  ["SELECT"
+                   "  CAST("
+                   "    DATEFROMPARTS(YEAR(dbo.orders.created_at), 1, 1) AS datetime2"
+                   "  ) AS created_at,"
+                   "  COUNT(*) AS count"
+                   "FROM"
+                   "  dbo.orders"
+                   "GROUP BY"
+                   "  YEAR(dbo.orders.created_at)"
+                   "ORDER BY"
+                   "  YEAR(dbo.orders.created_at) ASC"]
+
+                  :expected-rows
+                  [["2013-01-01T00:00:00Z" 235]
+                   ["2014-01-01T00:00:00Z" 498]
+                   ["2015-01-01T00:00:00Z" 267]]}
+
+                 "month"
+                 {:expected-sql
+                  ["SELECT"
+                   "  CAST("
+                   "    DATEFROMPARTS("
+                   "      YEAR(dbo.orders.created_at),"
+                   "      MONTH(dbo.orders.created_at),"
+                   "      1"
+                   "    ) AS datetime2"
+                   "  ) AS created_at,"
+                   "  COUNT(*) AS count"
+                   "FROM"
+                   "  dbo.orders"
+                   "GROUP BY"
+                   "  YEAR(dbo.orders.created_at),"
+                   "  MONTH(dbo.orders.created_at)"
+                   "ORDER BY"
+                   "  YEAR(dbo.orders.created_at) ASC,"
+                   "  MONTH(dbo.orders.created_at) ASC"]
+
+                  :expected-rows
+                  [["2013-01-01T00:00:00Z" 8]
+                   ["2013-02-01T00:00:00Z" 11]
+                   ["2013-03-01T00:00:00Z" 21]
+                   ["2013-04-01T00:00:00Z" 26]
+                   ["2013-05-01T00:00:00Z" 23]]}
+
+                 "day"
+                 {:expected-sql
+                  ["SELECT"
+                   "  CAST("
+                   "    DATEFROMPARTS("
+                   "      YEAR(dbo.orders.created_at),"
+                   "      MONTH(dbo.orders.created_at),"
+                   "      DAY(dbo.orders.created_at)"
+                   "    ) AS datetime2"
+                   "  ) AS created_at,"
+                   "  COUNT(*) AS count"
+                   "FROM"
+                   "  dbo.orders"
+                   "GROUP BY"
+                   "  YEAR(dbo.orders.created_at),"
+                   "  MONTH(dbo.orders.created_at),"
+                   "  DAY(dbo.orders.created_at)"
+                   "ORDER BY"
+                   "  YEAR(dbo.orders.created_at) ASC,"
+                   "  MONTH(dbo.orders.created_at) ASC,"
+                   "  DAY(dbo.orders.created_at) ASC"]
+
+                  :expected-rows
+                  [["2013-01-03T00:00:00Z" 1]
+                   ["2013-01-10T00:00:00Z" 1]
+                   ["2013-01-19T00:00:00Z" 1]
+                   ["2013-01-22T00:00:00Z" 1]
+                   ["2013-01-23T00:00:00Z" 1]]}}]
+          (testing (format "\nUnit = %s\n" unit)
+            (testing "Should generate the correct SQL query"
+              (is (= expected-sql
+                     (pretty-sql (:query (qp.compile/compile (query-with-bucketing unit)))))))
+            (testing "Should still return correct results"
+              (is (= expected-rows
+                     (take 5 (mt/rows
+                              (mt/run-mbql-query checkins
+                                {:aggregation [[:count]]
+                                 :breakout    [[:field $date {:temporal-unit unit}]]})))))
+              (is (= [:type/DateTime :type/Integer]
+                     (->> {:aggregation [[:count]]
+                           :breakout    [[:field $created_at {:temporal-unit unit}]]}
+                          (mt/run-mbql-query orders)
+                          :data
+                          :results_metadata
+                          :columns
+                          (map :base_type)))))))))))
+
+(deftest ^:parallel top-level-boolean-expressions-test
+  (mt/test-driver :sqlserver
+    (testing "BIT values like 0 and 1 get converted to equivalent boolean expressions"
+      (let [true-value  [:value true {:base_type :type/Boolean}]
+            false-value [:value false {:base_type :type/Boolean}]]
+        (letfn [(orders-query [args]
+                  (-> (mt/mbql-query orders
+                        {:expressions {"MyTrue"  true-value
+                                       "MyFalse" false-value}
+                         :fields      [[:expression "MyTrue"]]
+                         :limit       1})
+                      (update :query merge args)))]
+          (doseq [{:keys [desc query expected-sql expected-types expected-rows]}
+                  [{:desc "true filter"
+                    :query
+                    (orders-query {:filter true-value})
+                    :expected-sql
+                    ["SELECT"
+                     "  TOP(1) CAST(1 AS bit) AS MyTrue"
+                     "FROM"
+                     "  dbo.orders"
+                     "WHERE"
+                     "  1 = 1"]
+                    :expected-types [:type/Boolean]
+                    :expected-rows  [[true]]}
+                   {:desc "false filter"
+                    :query
+                    (orders-query {:filter false-value})
+                    :expected-sql
+                    ["SELECT"
+                     "  TOP(1) CAST(1 AS bit) AS MyTrue"
+                     "FROM"
+                     "  dbo.orders"
+                     "WHERE"
+                     "  0 = 1"]
+                    :expected-types [:type/Boolean]
+                    :expected-rows  []}
+                   {:desc "not filter"
+                    :query
+                    (orders-query {:filter [:not false-value]})
+                    :expected-sql
+                    ["SELECT"
+                     "  TOP(1) CAST(1 AS bit) AS MyTrue"
+                     "FROM"
+                     "  dbo.orders"
+                     "WHERE"
+                     "  NOT (0 = 1)"]
+                    :expected-types [:type/Boolean]
+                    :expected-rows  [[true]]}
+                   {:desc "nested logical operators"
+                    :query
+                    (orders-query {:filter [:and
+                                            [:not false-value]
+                                            [:or
+                                             [:expression "MyFalse"]
+                                             [:expression "MyTrue"]]]})
+                    :expected-sql
+                    ["SELECT"
+                     "  TOP(1) CAST(1 AS bit) AS MyTrue"
+                     "FROM"
+                     "  dbo.orders"
+                     "WHERE"
+                     "  NOT (0 = 1)"
+                     "  AND ("
+                     "    (0 = 1)"
+                     "    OR (1 = 1)"
+                     "  )"]
+                    :expected-types [:type/Boolean]
+                    :expected-rows  [[true]]}
+                   {:desc "case expression"
+                    :query
+                    (orders-query {:expressions {"MyTrue"  true-value
+                                                 "MyFalse" false-value
+                                                 "MyCase"  [:case [[[:expression "MyFalse"] false-value]
+                                                                   [[:expression "MyTrue"]  true-value]]]}
+                                   :fields [[:expression "MyCase"]]})
+                    :expected-sql
+                    ["SELECT"
+                     "  TOP(1) CASE"
+                     "    WHEN 0 = 1 THEN 0"
+                     "    WHEN 1 = 1 THEN 1"
+                     "  END AS MyCase"
+                     "FROM"
+                     "  dbo.orders"]
+                    :expected-types [:type/Integer]
+                    :expected-rows  [[1]]}
+                   ;; only top-level booleans should be transformed; otherwise an expression like 1 = 1 gets compiled
+                   ;; to (1 = 1) = (1 = 1)
+                   {:desc "non-top-level booleans"
+                    :query
+                    (orders-query {:filter [:= true-value true-value]})
+                    :expected-sql
+                    ["SELECT"
+                     "  TOP(1) CAST(1 AS bit) AS MyTrue"
+                     "FROM"
+                     "  dbo.orders"
+                     "WHERE"
+                     "  1 = 1"]
+                    :expected-types [:type/Boolean]
+                    :expected-rows  [[true]]}]]
+            (testing (format "\n%s\nMBQL query = %s\n" desc query)
+              (testing "Should generate the correct SQL query"
+                (is (= expected-sql
+                       (pretty-sql (:query (qp.compile/compile query))))))
+              (testing "Should return correct results"
+                (let [result (qp/process-query query)
+                      rows (mt/rows result)
+                      cols (mt/cols result)
+                      results-metadata-cols (-> result :data :results_metadata :columns)]
+                  (is (= expected-rows
+                         rows))
+                  (is (= expected-types
+                         (map :base_type cols)))
+                  (is (= expected-types
+                         (map :base_type results-metadata-cols))))))))))))
+
+(deftest ^:parallel predicate-expression-in-custom-column-test
+  (mt/test-driver :sqlserver
+    (let [mp    (mt/metadata-provider)
+          products (lib.metadata/table mp (mt/id :products))
+          id (lib.metadata/field mp (mt/id :products :id))
+          price (lib.metadata/field mp (mt/id :products :price))
+          category (lib.metadata/field mp (mt/id :products :category))]
+      (testing "predicate expression with >"
+        (let [query (-> (lib/query mp products)
+                        (lib/expression "price_gt60" (lib/> price 60))
+                        (lib/limit 5))
+              query (lib/with-fields query [id category price (lib/expression-ref query "price_gt60")])]
+          (is (= [[1 "Gizmo" 29.46 false]
+                  [2 "Doohickey" 70.08 true]
+                  [3 "Doohickey" 35.39 false]
+                  [4 "Doohickey" 73.99 true]
+                  [5 "Gadget" 82.75 true]]
+                 (mt/rows (qp/process-query query))))))
+      (testing "predicate expression with contains"
+        (let [query (-> (lib/query mp products)
+                        (lib/expression "contains_get" (lib/contains category "get"))
+                        (lib/limit 5))
+              query (lib/with-fields query [id category price (lib/expression-ref query "contains_get")])]
+          (is (= [[1 "Gizmo" 29.46 false]
+                  [2 "Doohickey" 70.08 false]
+                  [3 "Doohickey" 35.39 false]
+                  [4 "Doohickey" 73.99 false]
+                  [5 "Gadget" 82.75 true]]
+                 (mt/rows (qp/process-query query))))))
+      (testing "predicate expression with not"
+        (let [query (-> (lib/query mp products)
+                        (lib/expression "not_predicate" (lib/not (lib/> price 60)))
+                        (lib/limit 5))
+              query (lib/with-fields query [id category price (lib/expression-ref query "not_predicate")])]
+          (is (= [[1 "Gizmo" 29.46 true]
+                  [2 "Doohickey" 70.08 false]
+                  [3 "Doohickey" 35.39 true]
+                  [4 "Doohickey" 73.99 false]
+                  [5 "Gadget" 82.75 false]]
+                 (mt/rows (qp/process-query query))))))
+      (testing "predicate expression with or, and a filter"
+        (let [query (-> (lib/query mp products)
+                        (lib/expression "or_predicate" (lib/or (lib/> price 60) (lib/contains category "get")))
+                        (lib/filter (lib/contains category "g"))
+                        (lib/limit 5))
+              query (lib/with-fields query [id category price (lib/expression-ref query "or_predicate")])]
+          (is (= [[1 "Gizmo" 29.46 false]
+                  [5 "Gadget" 82.75 true]
+                  [9 "Widget" 58.31 true]
+                  [10 "Gizmo" 31.79 false]
+                  [11 "Gadget" 88.3 true]]
+                 (mt/rows (qp/process-query query))))))
+      (testing "predicate expression with and, and a filter"
+        (let [query (-> (lib/query mp products)
+                        (lib/expression "and_predicate" (lib/and (lib/> price 60) (lib/contains category "get")))
+                        (lib/filter (lib/contains category "g"))
+                        (lib/limit 5))
+              query (lib/with-fields query [id category price (lib/expression-ref query "and_predicate")])]
+          (is (= [[1 "Gizmo" 29.46 false]
+                  [5 "Gadget" 82.75 true]
+                  [9 "Widget" 58.31 false]
+                  [10 "Gizmo" 31.79 false]
+                  [11 "Gadget" 88.3 true]]
+                 (mt/rows (qp/process-query query))))))
+      (testing "nested predicate expression, and a filter"
+        (let [query (-> (lib/query mp products)
+                        (lib/expression "nested_predicate" (lib/and (lib/and (lib/> price 30) (lib/< price 60))
+                                                                    (lib/or (lib/contains category "wid")
+                                                                            (lib/contains category "gad"))))
+                        (lib/filter (lib/contains category "g"))
+                        (lib/limit 5))
+              query (lib/with-fields query [id category price (lib/expression-ref query "nested_predicate")])]
+          (is (= [[1 "Gizmo" 29.46 false]
+                  [5 "Gadget" 82.75 false]
+                  [9 "Widget" 58.31 true]
+                  [10 "Gizmo" 31.79 false]
+                  [11 "Gadget" 88.3 false]]
+                 (mt/rows (qp/process-query query)))))))))
+
+(deftest filter-by-datetime-fields-test
+  (mt/test-driver :sqlserver
+    (testing "Should match datetime fields even in non-default timezone (#30454)"
+      (mt/dataset attempted-murders
+        (let [limit 10
+              get-query (mt/mbql-query attempts
+                          {:fields [$id $datetime]
+                           :order-by [[:asc $id]]
+                           :limit limit})
+              filter-query (mt/mbql-query attempts
+                             {:fields [$id $datetime]
+                              :filter [:= [:field %attempts.datetime {:base-type :type/DateTime}]]
+                              :order-by [[:asc $id]]
+                              :limit limit})]
+          (doseq [with-tz-setter [#'qp.test-util/do-with-report-timezone-id!
+                                  #'test.tz/do-with-system-timezone-id!
+                                  #'qp.test-util/do-with-database-timezone-id
+                                  #'qp.test-util/do-with-results-timezone-id]
+                  timezone ["UTC" "Pacific/Auckland"]]
+            (testing (str with-tz-setter " " timezone)
+              (with-tz-setter timezone
+                (fn []
+                  (let [expected-result (-> get-query qp/process-query mt/rows)
+                        filter-query (update-in filter-query [:query :filter] into (map second) expected-result)]
+                    (mt/with-native-query-testing-context filter-query
+                      (is (= expected-result
+                             (-> filter-query qp/process-query mt/rows))))))))))))))
+
+(deftest ^:parallel filter-by-datetime-against-localdate-time-test
+  (mt/test-driver :sqlserver
+    (testing "Filtering datetime fields by localdatetime objects should work"
+      (mt/dataset attempted-murders
+        (let [tricky-datetime        "2019-11-02T00:14:14.247"
+              datetime-string        (-> tricky-datetime
+                                         (str/replace #"T" " "))
+              datetime-localdatetime (t/local-date-time (u.date/parse tricky-datetime))
+              base-query             (qp.store/with-metadata-provider (mt/id)
+                                       (first
+                                        (sql.qp/format-honeysql
+                                         :sqlserver
+                                         {:select [:id]
+                                          :from   [:attempts]
+                                          :where  (sql.qp/->honeysql
+                                                   :sqlserver
+                                                   [:=
+                                                    [:field (mt/id :attempts :datetime) nil]
+                                                    (sql.qp/compiled [:raw "?"])])})))]
+          (doseq [param [datetime-string datetime-localdatetime]
+                  :let  [query [base-query param]]]
+            (testing (pr-str query)
+              (is (= [{:id 2}]
+                     (sql-jdbc.execute/do-with-connection-with-options
+                      :sqlserver
+                      (mt/id)
+                      {}
+                      (fn [^java.sql.Connection conn]
+                        (next.jdbc/execute! conn query))))))))))))
+
+(deftest ^:parallel db-default-timezone-test
+  (mt/test-driver :sqlserver
+    (is (= "Z" (str (driver/db-default-timezone :sqlserver (mt/db)))))))
+
+(deftest ^:parallel default-database-role-test
+  (testing "SQL Server default database role handling"
+    (testing "returns role when explicitly configured"
+      (let [database {:lib/type :metadata/database
+                      :details {:user "login_user" :role "db_user"}}]
+        (is (= "db_user" (driver.sql/default-database-role :sqlserver database)))))
+    (testing "returns nil when no role is configured"
+      (let [database {:lib/type :metadata/database
+                      :details {:user "login_user"}}]
+        (is (nil? (driver.sql/default-database-role :sqlserver database)))))
+    (testing "returns nil even when user is 'sa'"
+      (let [database {:lib/type :metadata/database
+                      :details {:user "sa"}}]
+        (is (nil? (driver.sql/default-database-role :sqlserver database)))))
+    (testing "ignores user field and only uses role field"
+      (let [database {:lib/type :metadata/database
+                      :details {:user "login_user" :role "impersonation_user"}}]
+        (is (= "impersonation_user" (driver.sql/default-database-role :sqlserver database)))))))
+
+(deftest ^:parallel wtf-test
+  (driver/with-driver :sqlserver
+    (qp.store/with-metadata-provider (mt/id)
+      (binding [sql.qp/*inner-query* {:expressions
+                                      {"NameEquals"
+                                       [:=
+                                        [:field
+                                         "LiteralString"
+                                         {:base-type                      :type/Text
+                                          :join-alias                     "JoinedCategories"
+                                          driver-api/qp.add.source-table  "JoinedCategories"
+                                          driver-api/qp.add.source-alias  "LiteralString"
+                                          driver-api/qp.add.desired-alias "JoinedCategories__LiteralString"}]
+                                        [:field
+                                         (mt/id :venues :name)
+                                         {driver-api/qp.add.source-table  (mt/id :venues)
+                                          driver-api/qp.add.source-alias  "name"
+                                          driver-api/qp.add.desired-alias "name"}]]}}]
+        (is (= {:where
+                [:=
+                 [::h2x/identifier :field ["JoinedCategories" "LiteralString"]]
+                 [::h2x/typed
+                  [::h2x/identifier :field ["dbo" "venues" "name"]]
+                  {:database-type "varchar"}]]}
+               (sql.qp/apply-top-level-clause
+                :sqlserver
+                :filter
+                {}
+                {:filter [:expression "NameEquals" {:base-type                      :type/Boolean
+                                                    driver-api/qp.add.source-table  driver-api/qp.add.none
+                                                    driver-api/qp.add.desired-alias nil}]})))))))
+
+(mt/defdataset ^:private bigint-identity-data
+  [["bigint_identity_test"
+    [{:field-name "id", :base-type {:native "BIGINT IDENTITY(1,1)"}, :pk? true}
+     {:field-name "name", :base-type :type/Text}]
+    []]])
+
+(deftest bigint-identity-base-type-test
+  (testing "BIGINT IDENTITY columns should sync as :type/BigInteger, not :type/* (#68631)"
+    (mt/test-driver :sqlserver
+      (mt/dataset bigint-identity-data
+        (is (= :type/BigInteger
+               (t2/select-one-fn :base_type :model/Field (mt/id :bigint_identity_test :id))))))))
+
+(deftest ^:parallel type->database-type-test
+  (testing "type->database-type multimethod returns correct SQL Server types"
+    (are [base-type expected] (= expected (driver/type->database-type :sqlserver base-type))
+      :type/Boolean            [:bit]
+      :type/Date               [:date]
+      :type/DateTime           [:datetime2]
+      :type/DateTimeWithTZ     [:datetimeoffset]
+      :type/Decimal            [:decimal]
+      :type/Float              [:float]
+      :type/Integer            [:int]
+      :type/Number             [:bigint]
+      :type/Text               [:text]
+      :type/Time               [:time]
+      :type/UUID               [:uniqueidentifier])))
+
+(deftest ^:parallel compile-transform-test
+  (mt/test-driver :sqlserver
+    (testing "compile-transform creates SELECT INTO"
+      ;; Both formats are valid T-SQL: double-quoted identifiers (Macaw/JSQLParser)
+      ;; and bracketed identifiers (SQLGlot). SQL Server accepts both.
+      (is (contains? #{["SELECT * INTO \"PRODUCTS_COPY\" FROM products" nil]
+                       ["SELECT * INTO [PRODUCTS_COPY] FROM products" nil]}
+                     (driver/compile-transform :sqlserver {:query {:query "SELECT * FROM products"}
+                                                           :output-table "PRODUCTS_COPY"}))))
+    (testing "compile-insert generates INSERT INTO"
+      (is (= ["INSERT INTO \"PRODUCTS_COPY\" SELECT * FROM products" nil]
+             (driver/compile-insert :sqlserver {:query {:query "SELECT * FROM products"}
+                                                :output-table "PRODUCTS_COPY"}))))))
+
+(deftest table-privileges-test
+  (mt/test-driver :sqlserver
+    (testing "`current-user-table-privileges` returns correct structure and privileges"
+      (sql-jdbc.execute/do-with-connection-with-options
+       :sqlserver (mt/db) nil
+       (fn [conn]
+         (let [privileges (sql-jdbc.sync/current-user-table-privileges :sqlserver {:connection conn})]
+           (is (seq privileges) "Should return at least one table")
+           (doseq [priv privileges]
+             (is (= #{:role :schema :table :select :update :insert :delete}
+                    (set (keys priv)))
+                 "Should have all required keys")
+             (is (nil? (:role priv)))
+             (is (string? (:schema priv)))
+             (is (string? (:table priv)))
+             (is (boolean? (:select priv)))
+             (is (boolean? (:update priv)))
+             (is (boolean? (:insert priv)))
+             (is (boolean? (:delete priv))))
+           (testing "Test tables should appear with at least SELECT privilege"
+             (let [dbo-orders (filter (fn [priv]
+                                        (and (= "dbo" (:schema priv))
+                                             (= "ORDERS" (u/upper-case-en (:table priv)))))
+                                      privileges)]
+               (when (seq dbo-orders)
+                 (is (every? :select dbo-orders)))))))))))
+
+(deftest ^:parallel set-role-statement-escape-quotes-test
+  (mt/test-driver :sqlserver
+    (is (= "REVERT; EXECUTE AS USER = 'role''; SELECT sleep(10); --';"
+           (sql-jdbc.execute/do-with-connection-with-options
+            :sqlserver (mt/id) nil
+            (fn [conn]
+              (driver.sql-jdbc/set-role-statement :sqlserver conn "role'; SELECT sleep(10); --")))))))
+
+(mt/defdataset ^:private datetime-offset
+  [["datetime-offset"
+    [{:field-name "start", :base-type {:native "DATETIMEOFFSET"}}
+     {:field-name "end", :base-type {:native "DATETIMEOFFSET"}}]
+    [["2025-10-10 09:00:00 +02:00" "2025-10-10 10:00:00 +02:00"]
+     ["2025-10-11 09:15:00 +02:00" "2025-10-11 09:30:00 +02:00"]]]])
+
+(deftest ^:parallel datetime-diff-with-datetime-offset-test
+  (mt/test-driver :sqlserver
+    (mt/dataset datetime-offset
+      (let [mp (mt/metadata-provider)
+            datetime-table (lib.metadata/table mp (mt/id :datetime-offset))
+            start-col (lib.metadata/field mp (mt/id :datetime-offset :start))
+            end-col (lib.metadata/field mp (mt/id :datetime-offset :end))
+            diff-minutes (lib/expression-clause :datetime-diff
+                                                [start-col end-col :minute]
+                                                nil)]
+        (is (= [[1 "2025-10-10T07:00:00Z" "2025-10-10T08:00:00Z" 60]
+                [2 "2025-10-11T07:15:00Z" "2025-10-11T07:30:00Z" 15]]
+               (-> (lib/query mp datetime-table)
+                   (lib/expression "diff-minutes" diff-minutes)
+                   (qp/process-query)
+                   (mt/rows))))))))
+
+(deftest ^:parallel connection-parameter-hosts-test
+  (testing "`serverName` in additional-options overrides the host in the URL, so it counts as a connection host"
+    (let [details {:host "real.example.com" :port 1433 :db "db"}
+          hosts   #(set (driver/connection-parameter-hosts :sqlserver %))]
+      (is (contains? (hosts (assoc details :additional-options "serverName=10.0.0.1")) "10.0.0.1"))
+      (is (not (contains? (hosts details) "10.0.0.1"))))))
+
+(deftest create-schema-if-needed!-escapes-schema-name-test
+  (testing "the transform target :schema is escaped in the EXEC literal"
+    (let [captured (atom nil)]
+      (with-redefs [driver/execute-raw-queries! (fn [_driver _conn-spec sql] (reset! captured sql))]
+        (driver/create-schema-if-needed! :sqlserver {} "x'); DROP TABLE secrets; --"))
+      (is (= "IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'x''); DROP TABLE secrets; --') EXEC('CREATE SCHEMA \"x''); DROP TABLE secrets; --\";');"
+             (ffirst @captured))))))
+
+(deftest ^:parallel add-interval-honeysql-form-rejects-hostile-unit-test
+  (testing "the SQL Server DATEADD sink refuses a unit outside its closed allow-list"
+    (let [hostile (keyword "day) FROM t2 UNION SELECT pw FROM secrets --")]
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo
+           #"Invalid temporal unit"
+           (sql.qp/add-interval-honeysql-form :sqlserver :some_col 1 hostile))))
+    (testing "and still compiles a legitimate unit to the expected DATEPART token"
+      (is (= ["DATEADD(day, 1, some_col)"]
+             (sql/format-expr (sql.qp/add-interval-honeysql-form :sqlserver :some_col 1 :day)
+                              {:nested true}))))))
+
+(deftest ^:parallel escape-like-pattern-test
+  (testing "escape-like-pattern neutralizes every SQL Server LIKE metacharacter, so a filter value matches literally"
+    (are [pattern expected] (= expected (sql.qp/escape-like-pattern :sqlserver pattern))
+      "abc"           "abc"
+      "a%b"           "a[%]b"
+      "a_b"           "a[_]b"
+      ;; `[` opens a character class in SQL Server LIKE, so it must be escaped too (it was not, letting a public /
+      ;; embedded dashboard filter value run as a pattern rather than a literal)
+      "a[bc]"         "a[[]bc]"
+      "50% off [x]"   "50[%] off [[]x]"
+      ;; `[` is escaped first, so the brackets the other replacements introduce are not re-escaped
+      "x[%]y"         "x[[][%]]y")))
+
+(deftest cancelation-poisons-connection-test
+  (testing "discarding the Connection a query canceled on leaves the pool able to serve later queries (#39018)"
+    (mt/test-driver :sqlserver
+      (is (true? (sql-jdbc.execute/cancelation-poisons-connection? :sqlserver))
+          "SQL Server does not recover from a cancelation on its own, so the Connection must not be recycled")
+      (letfn [(rows [table n]
+                (let [mp (mt/metadata-provider)]
+                  (cond-> (lib/query mp (lib.metadata/table mp (mt/id table)))
+                    n    (lib/limit n)
+                    true (-> qp/process-query mt/rows))))]
+        ;; stopping at the limit leaves the statement producing, which is what triggers the cancel-and-discard
+        (is (= 4 (count (rows :venues 4))))
+        (testing "and a later query reading every row still succeeds"
+          (is (= 1000 (count (rows :checkins nil)))))))))

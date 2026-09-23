@@ -1,0 +1,68 @@
+import { t } from "ttag";
+import _ from "underscore";
+
+import { useListPopularItemsQuery } from "metabase/api";
+import { LoadingAndErrorWrapper } from "metabase/common/components/LoadingAndErrorWrapper";
+import { useGetIcon } from "metabase/hooks/use-icon";
+import * as Urls from "metabase/urls";
+import { getName } from "metabase/utils/name";
+import type { PopularItem } from "metabase-types/api";
+
+import { HomeCaption } from "../HomeCaption";
+import { HomeHelpCard } from "../HomeHelpCard";
+import { HomeModelCard } from "../HomeModelCard";
+
+import S from "./HomePopularSection.module.css";
+
+export const HomePopularSection = (): JSX.Element => {
+  const getIcon = useGetIcon();
+  const {
+    data: popularItems = [],
+    isLoading,
+    error,
+  } = useListPopularItemsQuery(undefined, { refetchOnMountOrArgChange: true });
+
+  if (isLoading || error) {
+    return <LoadingAndErrorWrapper loading={isLoading} error={error} />;
+  }
+
+  return (
+    <div>
+      <HomeCaption>{getTitle(popularItems)}</HomeCaption>
+      <div className={S.SectionBody}>
+        {popularItems.map((item, index) => (
+          <HomeModelCard
+            key={index}
+            title={getName(item)}
+            icon={getIcon(item)}
+            url={Urls.modelToUrl(item) ?? ""}
+          />
+        ))}
+        <HomeHelpCard />
+      </div>
+    </div>
+  );
+};
+
+const getTitle = (popularItems: PopularItem[]) => {
+  const models = _.uniq(popularItems.map((item) => item.model));
+
+  if (models.length !== 1) {
+    return t`Here are some popular items`;
+  }
+
+  switch (models[0]) {
+    case "table":
+      return t`Here are some popular tables`;
+    case "card":
+      return t`Here are some popular questions`;
+    case "dataset":
+      return t`Here are some popular models`;
+    case "metric":
+      return t`Here are some popular metrics`;
+    case "dashboard":
+      return t`Here are some popular dashboards`;
+    default:
+      return t`Here are some popular items`;
+  }
+};

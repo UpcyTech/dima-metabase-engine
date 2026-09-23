@@ -1,0 +1,70 @@
+.keyword {
+  color: var(--mb-color-core-purple-saturated);
+}
+
+.variable,
+.function {
+  color: var(--mb-color-core-blue-saturated);
+}
+
+.function.variableName {
+  color: inherit;
+}
+
+.constant,
+.typeName {
+  color: var(--mb-color-core-red-saturated);
+}
+
+.string {
+  color: var(--mb-color-core-green-saturated);
+}
+
+.number,
+.bool {
+  color: var(--mb-color-core-red-saturated);
+}
+
+.paren {
+  color: inherit;
+}
+
+.comment,
+.lineComment,
+.blockComment {
+  color: var(--mb-color-text-disabled);
+  font-style: italic;
+}
+
+.brace {
+  color: var(--mb-color-text-disabled);
+}
+
+.squareBracket {
+  color: var(--mb-color-core-brand);
+}
+
+.callExpression {
+  font-weight: bold;
+}
+
+.processingInstruction {
+  color: var(--mb-color-core-brand);
+}
+
+.logicOperator {
+  color: var(--mb-color-core-purple-saturated);
+}
+
+.arithmeticOperator,
+.compareOperator {
+  color: var(--mb-color-text-primary);
+}
+
+.escape {
+  color: var(--mb-color-core-red-saturated);
+}
+
+.typeName {
+  color: var(--mb-color-core-purple-saturated);
+}

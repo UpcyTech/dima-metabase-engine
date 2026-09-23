@@ -1,0 +1,1076 @@
+import userEvent from "@testing-library/user-event";
+
+import { setupEnterprisePlugins } from "__support__/enterprise";
+import { createMockMetadata } from "__support__/metadata";
+import {
+  setupCardsEndpoints,
+  setupCollectionByIdEndpoint,
+  setupCollectionItemsEndpoint,
+  setupCollectionsEndpoints,
+  setupDatabasesEndpoints,
+  setupErrorParameterValuesEndpoints,
+  setupParameterValuesEndpoints,
+  setupRecentViewsAndSelectionsEndpoints,
+  setupSearchEndpoints,
+  setupTableQueryMetadataEndpoint,
+  setupUnauthorizedCardsEndpoints,
+  setupUnauthorizedCollectionsEndpoints,
+} from "__support__/server-mocks";
+import { mockSettings } from "__support__/settings";
+import { createMockEntitiesState } from "__support__/store";
+import {
+  renderWithProviders,
+  screen,
+  waitForLoaderToBeRemoved,
+} from "__support__/ui";
+import { ROOT_COLLECTION } from "metabase/common/collections/constants";
+import { createMockState } from "metabase/redux/store/mocks";
+import { checkNotNull } from "metabase/utils/types";
+import { createMockUiParameter } from "metabase-lib/v1/parameters/mock";
+import type { UiParameter } from "metabase-lib/v1/parameters/types";
+import type { Card, ParameterValues } from "metabase-types/api";
+import {
+  createMockCard,
+  createMockCollection,
+  createMockDatabase,
+  createMockField,
+  createMockParameterValues,
+  createMockTable,
+  createMockTokenFeatures,
+  createMockUser,
+} from "metabase-types/api/mocks";
+
+import ValuesSourceModal from "./ValuesSourceModal";
+
+describe("ValuesSourceModal", () => {
+  describe("string parameter", () => {
+    const metadata = createMockMetadata({
+      fields: [
+        createMockField({
+          id: 1,
+          base_type: "type/Text",
+          effective_type: "type/Text",
+          semantic_type: "type/Category",
+        }),
+        createMockField({
+          id: 2,
+          base_type: "type/Text",
+          effective_type: "type/Text",
+          semantic_type: "type/Category",
+        }),
+      ],
+    });
+
+    const field1 = checkNotNull(metadata.field(1));
+    const field2 = checkNotNull(metadata.field(2));
+
+    describe("fields source", () => {
+      it("should show a message about missing field values", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1],
+          }),
+          parameterValues: createMockParameterValues({
+            values: [],
+          }),
+        });
+
+        expect(
+          await screen.findByText(/We don’t have any cached values/),
+        ).toBeInTheDocument();
+      });
+
+      it("should show field values", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1, field2],
+          }),
+          parameterValues: createMockParameterValues({
+            values: [["A"], ["B"], ["C"]],
+          }),
+        });
+
+        expect(await screen.findByRole("textbox")).toHaveValue("A\nB\nC");
+      });
+
+      it("should not show the connected fields option if parameter is not wired to any fields", async () => {
+        await setup();
+        expect(
+          screen.queryByRole("radio", { name: "From connected fields" }),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.getByRole("radio", { name: "From another model or question" }),
+        ).toBeChecked();
+      });
+
+      it("should show the fields option if parameter is wired to a field", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1],
+          }),
+        });
+        expect(
+          screen.queryByRole("radio", { name: "From connected fields" }),
+        ).toBeChecked();
+        expect(
+          screen.getByRole("radio", { name: "From another model or question" }),
+        ).toBeInTheDocument();
+      });
+
+      it("should preserve custom list option for variable template tags", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "static-list",
+            hasVariableTemplateTagTarget: true,
+          }),
+        });
+
+        expect(
+          screen.getByRole("radio", { name: "Custom list" }),
+        ).toBeChecked();
+      });
+
+      it("should copy field values when switching to custom list", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1, field2],
+            values_source_config: {
+              values: ["A", "B"],
+            },
+          }),
+          parameterValues: createMockParameterValues({
+            values: [["C"], ["D"]],
+          }),
+        });
+        expect(await screen.findByRole("textbox")).toHaveValue("C\nD");
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+        expect(
+          screen.getByRole("radio", { name: "Custom list" }),
+        ).toBeChecked();
+        expect(screen.getByRole("textbox")).toHaveValue("C\nD");
+      });
+
+      it("should not overwrite custom list values when field values are empty", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1, field2],
+            values_source_config: {
+              values: ["A", "B"],
+            },
+          }),
+          parameterValues: createMockParameterValues({
+            values: [],
+          }),
+        });
+        expect(
+          await screen.findByText(/We don’t have any cached values/),
+        ).toBeInTheDocument();
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+        expect(
+          screen.getByRole("radio", { name: "Custom list" }),
+        ).toBeChecked();
+        expect(screen.getByRole("textbox")).toHaveValue("A\nB");
+      });
+    });
+
+    describe("card source", () => {
+      it("should show a message when there are no text columns", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+            },
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+            }),
+          ],
+        });
+
+        expect(
+          screen.getByText(/This question doesn’t have any text columns/),
+        ).toBeInTheDocument();
+      });
+
+      it("should allow to select only text fields", async () => {
+        const { onSubmit } = await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+            },
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+              result_metadata: [
+                createMockField({
+                  id: 1,
+                  name: "id",
+                  display_name: "ID",
+                  base_type: "type/BigInteger",
+                  effective_type: "type/BigInteger",
+                  semantic_type: "type/PK",
+                }),
+                createMockField({
+                  id: 2,
+                  name: "category",
+                  display_name: "Category",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Category",
+                }),
+              ],
+            }),
+          ],
+        });
+
+        await userEvent.click(screen.getByPlaceholderText(/Pick a column/));
+        expect(
+          screen.queryByRole("option", { name: "ID" }),
+        ).not.toBeInTheDocument();
+
+        await userEvent.click(screen.getByRole("option", { name: "Category" }));
+        await userEvent.click(screen.getByRole("button", { name: "Done" }));
+        expect(onSubmit).toHaveBeenCalledWith("card", {
+          card_id: 1,
+          value_field: ["field", "category", { "base-type": "type/Text" }],
+        });
+      });
+
+      it("should not show the label field selector until a value field is selected", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+            },
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+              result_metadata: [
+                createMockField({
+                  id: 2,
+                  name: "category",
+                  display_name: "Category",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Category",
+                }),
+              ],
+            }),
+          ],
+        });
+
+        expect(
+          screen.getByText("Column to supply the values"),
+        ).toBeInTheDocument();
+        expect(
+          screen.queryByText("Column to supply the labels"),
+        ).not.toBeInTheDocument();
+      });
+
+      it("should only offer text columns as the label field for remapping", async () => {
+        const { onSubmit } = await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+              value_field: ["field", 2, null],
+              // start with a label so we exercise selecting a different one
+              label_field: ["field", 3, null],
+            },
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+              result_metadata: [
+                createMockField({
+                  id: 1,
+                  name: "id",
+                  display_name: "ID",
+                  base_type: "type/BigInteger",
+                  effective_type: "type/BigInteger",
+                  semantic_type: "type/PK",
+                }),
+                createMockField({
+                  id: 2,
+                  name: "category",
+                  display_name: "Category",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Category",
+                }),
+                createMockField({
+                  id: 3,
+                  name: "title",
+                  display_name: "Title",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Title",
+                }),
+              ],
+            }),
+          ],
+        });
+        expect(
+          screen.getByText("Column to supply the labels"),
+        ).toBeInTheDocument();
+
+        await userEvent.click(screen.getByDisplayValue("Title"));
+        const categoryOption = await screen.findByRole("option", {
+          name: "Category",
+        });
+        expect(
+          screen.queryByRole("option", { name: "ID" }),
+        ).not.toBeInTheDocument();
+        await userEvent.click(categoryOption);
+
+        await userEvent.click(screen.getByRole("button", { name: "Done" }));
+        expect(onSubmit).toHaveBeenCalledWith("card", {
+          card_id: 1,
+          value_field: ["field", 2, null],
+          label_field: ["field", "category", { "base-type": "type/Text" }],
+        });
+      });
+
+      it("should allow clearing the label field with the None option", async () => {
+        const { onSubmit } = await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+              value_field: ["field", 2, null],
+              label_field: ["field", 3, null],
+            },
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+              result_metadata: [
+                createMockField({
+                  id: 2,
+                  name: "category",
+                  display_name: "Category",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Category",
+                }),
+                createMockField({
+                  id: 3,
+                  name: "title",
+                  display_name: "Title",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Title",
+                }),
+              ],
+            }),
+          ],
+        });
+
+        await userEvent.click(screen.getByDisplayValue("Title"));
+        const noneOption = await screen.findByRole("option", { name: "None" });
+        await userEvent.click(noneOption);
+
+        await userEvent.click(screen.getByRole("button", { name: "Done" }));
+        expect(onSubmit).toHaveBeenCalledWith("card", {
+          card_id: 1,
+          value_field: ["field", 2, null],
+          label_field: undefined,
+        });
+      });
+
+      it("should show card values", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+              value_field: ["field", 2, null],
+            },
+          }),
+          parameterValues: createMockParameterValues({
+            values: [["A"], ["B"], ["C"]],
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+              result_metadata: [
+                createMockField({
+                  id: 2,
+                  display_name: "Category",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Category",
+                }),
+              ],
+            }),
+          ],
+        });
+
+        expect(screen.getByRole("textbox", { name: "Values" })).toHaveValue(
+          "A\nB\nC",
+        );
+      });
+
+      it("should display a message when the user has no access to the card", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+            },
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+            }),
+          ],
+          hasCollectionAccess: false,
+        });
+
+        expect(
+          screen.getByText("You don't have permissions to do that."),
+        ).toBeInTheDocument();
+      });
+
+      it("should allow searching for a card without access to the root collection (metabase#30355)", async () => {
+        await setup({
+          hasCollectionAccess: false,
+        });
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "From another model or question" }),
+        );
+        await userEvent.click(
+          screen.getByRole("button", { name: /Pick a model or question/ }),
+        );
+
+        expect(
+          await screen.findByPlaceholderText(/Search…/),
+        ).toBeInTheDocument();
+      });
+
+      it("should display a message when there is an error in the underlying query", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+              value_field: ["field", 2, null],
+            },
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+              result_metadata: [
+                createMockField({
+                  id: 2,
+                  display_name: "Category",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Category",
+                }),
+              ],
+            }),
+          ],
+          hasParameterValuesError: true,
+        });
+
+        expect(
+          screen.getByText("An error occurred in your query"),
+        ).toBeInTheDocument();
+      });
+
+      it("should copy card values when switching to custom list", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "card",
+            values_source_config: {
+              card_id: 1,
+              value_field: ["field", 2, null],
+            },
+          }),
+          parameterValues: createMockParameterValues({
+            values: [["A"], ["B"], ["C"]],
+          }),
+          cards: [
+            createMockCard({
+              id: 1,
+              name: "Products",
+              result_metadata: [
+                createMockField({
+                  id: 2,
+                  display_name: "Category",
+                  base_type: "type/Text",
+                  effective_type: "type/Text",
+                  semantic_type: "type/Category",
+                }),
+              ],
+            }),
+          ],
+        });
+        expect(screen.getByRole("textbox", { name: "Values" })).toHaveValue(
+          "A\nB\nC",
+        );
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+        expect(
+          screen.getByRole("radio", { name: "Custom list" }),
+        ).toBeChecked();
+        expect(screen.getByRole("textbox")).toHaveValue("A\nB\nC");
+      });
+    });
+
+    describe("list source", () => {
+      it("should set static list values", async () => {
+        const { onSubmit } = await setup();
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+        await userEvent.type(screen.getByRole("textbox"), "Gadget\nWidget");
+        await userEvent.click(screen.getByRole("button", { name: "Done" }));
+
+        expect(onSubmit).toHaveBeenCalledWith("static-list", {
+          values: [["Gadget"], ["Widget"]],
+        });
+      });
+
+      it("should preserve the list when changing the source type", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1],
+            values_source_type: "static-list",
+            values_source_config: {
+              values: [["Gadget"], ["Widget"]],
+            },
+          }),
+        });
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "From connected fields" }),
+        );
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+
+        expect(screen.getByRole("textbox")).toHaveValue("Gadget\nWidget");
+      });
+
+      it("should render a hint about using models when labels are used", async () => {
+        await setup({
+          showMetabaseLinks: true,
+          parameter: createMockUiParameter({
+            fields: [field1],
+            values_source_type: "static-list",
+            values_source_config: {
+              values: [["Gadget", "Label"], ["Widget"]],
+            },
+          }),
+        });
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "From connected fields" }),
+        );
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+
+        expect(screen.getByRole("textbox")).toHaveValue(
+          "Gadget, Label\nWidget",
+        );
+        expect(screen.getByText("do it once in a model")).toBeInTheDocument();
+        expect(screen.getByText("do it once in a model").tagName).toBe("A");
+      });
+
+      it("should render a hint about using models when labels are used, but without link when `show-metabase-links: false`", async () => {
+        await setup({
+          showMetabaseLinks: false,
+          parameter: createMockUiParameter({
+            fields: [field1],
+            values_source_type: "static-list",
+            values_source_config: {
+              values: [["Gadget", "Label"], ["Widget"]],
+            },
+          }),
+        });
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "From connected fields" }),
+        );
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+
+        expect(screen.getByRole("textbox")).toHaveValue(
+          "Gadget, Label\nWidget",
+        );
+        expect(screen.getByText("do it once in a model")).toBeInTheDocument();
+        expect(screen.getByText("do it once in a model").tagName).not.toBe("A");
+      }, 45000); // The test continues to exceed 30 seconds timeout in ci: https://github.com/metabase/metabase/actions/runs/18809109055/job/53668418124#step:5:786
+    });
+  });
+
+  describe("number parameter", () => {
+    const metadata = createMockMetadata({
+      fields: [
+        createMockField({
+          id: 1,
+          base_type: "type/Integer",
+          effective_type: "type/Integer",
+        }),
+        createMockField({
+          id: 2,
+          base_type: "type/Integer",
+          effective_type: "type/Integer",
+        }),
+      ],
+    });
+
+    const field1 = checkNotNull(metadata.field(1));
+    const field2 = checkNotNull(metadata.field(2));
+
+    describe("fields source", () => {
+      it("should show a message about missing field values", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            type: "number/=",
+            fields: [field1],
+          }),
+          parameterValues: createMockParameterValues({
+            values: [],
+          }),
+        });
+
+        expect(
+          await screen.findByText(/We don’t have any cached values/),
+        ).toBeInTheDocument();
+      });
+
+      it("should not show the option for connected fields if there are none", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            type: "number/=",
+            values_source_type: "static-list",
+          }),
+          parameterValues: createMockParameterValues({
+            values: [],
+          }),
+        });
+        expect(
+          screen.queryByText("From connected fields"),
+        ).not.toBeInTheDocument();
+      });
+
+      it("should show field values", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            type: "number/=",
+            fields: [field1, field2],
+          }),
+          parameterValues: createMockParameterValues({
+            values: [[1], [2], [3]],
+          }),
+        });
+
+        expect(await screen.findByRole("textbox")).toHaveValue("1\n2\n3");
+      });
+
+      it("should not show the connected fields option if parameter is not wired to any fields", async () => {
+        await setup();
+        expect(
+          screen.queryByRole("radio", { name: "From connected fields" }),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.getByRole("radio", { name: "From another model or question" }),
+        ).toBeChecked();
+      });
+
+      it("should show the fields option if parameter is wired to a field", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1],
+          }),
+        });
+        expect(
+          screen.queryByRole("radio", { name: "From connected fields" }),
+        ).toBeChecked();
+        expect(
+          screen.getByRole("radio", { name: "From another model or question" }),
+        ).toBeInTheDocument();
+      });
+
+      it("should preserve custom list option for variable template tags", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            values_source_type: "static-list",
+            hasVariableTemplateTagTarget: true,
+          }),
+        });
+
+        expect(
+          screen.getByRole("radio", { name: "Custom list" }),
+        ).toBeChecked();
+      });
+
+      it("should copy field values when switching to custom list", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1, field2],
+            values_source_config: {
+              values: [["1"], ["2"]],
+            },
+          }),
+          parameterValues: createMockParameterValues({
+            values: [[3], [4]],
+          }),
+        });
+        expect(await screen.findByRole("textbox")).toHaveValue("3\n4");
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+        expect(
+          screen.getByRole("radio", { name: "Custom list" }),
+        ).toBeChecked();
+        expect(screen.getByRole("textbox")).toHaveValue("3\n4");
+      });
+
+      it("should not overwrite custom list values when field values are empty", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1, field2],
+            values_source_config: {
+              values: [["1"], ["2"]],
+            },
+          }),
+          parameterValues: createMockParameterValues({
+            values: [],
+          }),
+        });
+        expect(
+          await screen.findByText(/We don’t have any cached values/),
+        ).toBeInTheDocument();
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+        expect(
+          screen.getByRole("radio", { name: "Custom list" }),
+        ).toBeChecked();
+        expect(screen.getByRole("textbox")).toHaveValue("1\n2");
+      });
+    });
+
+    describe("card source", () => {
+      it("should show the card source for number parameters with dropdown list", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            type: "number/=",
+            values_query_type: "list",
+            values_source_type: "static-list",
+          }),
+          cards: [],
+        });
+
+        expect(
+          screen.getByText("From another model or question"),
+        ).toBeInTheDocument();
+      });
+
+      it("should not show the card source for number parameters with search box", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            type: "number/=",
+            values_query_type: "search",
+            values_source_type: "static-list",
+          }),
+          cards: [],
+        });
+
+        expect(
+          screen.queryByText("From another model or question"),
+        ).not.toBeInTheDocument();
+      });
+    });
+
+    describe("list source", () => {
+      it("should set static list values", async () => {
+        const { onSubmit } = await setup();
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+        await userEvent.type(screen.getByRole("textbox"), "1\n2");
+        await userEvent.click(screen.getByRole("button", { name: "Done" }));
+
+        expect(onSubmit).toHaveBeenCalledWith("static-list", {
+          values: [["1"], ["2"]],
+        });
+      });
+
+      it("should preserve the list when changing the source type", async () => {
+        await setup({
+          parameter: createMockUiParameter({
+            fields: [field1],
+            values_source_type: "static-list",
+            values_source_config: {
+              values: [["1"], ["2"]],
+            },
+          }),
+        });
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "From connected fields" }),
+        );
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+
+        expect(screen.getByRole("textbox")).toHaveValue("1\n2");
+      });
+
+      it("should render a hint about using models when labels are used", async () => {
+        await setup({
+          showMetabaseLinks: true,
+          parameter: createMockUiParameter({
+            fields: [field1],
+            values_source_type: "static-list",
+            values_source_config: {
+              values: [["1", "Label"], ["2"]],
+            },
+          }),
+        });
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "From connected fields" }),
+        );
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+
+        expect(screen.getByRole("textbox")).toHaveValue("1, Label\n2");
+        expect(screen.getByText("do it once in a model")).toBeInTheDocument();
+        expect(screen.getByText("do it once in a model").tagName).toBe("A");
+      });
+
+      it("should render a hint about using models when labels are used, but without link when `show-metabase-links: false`", async () => {
+        await setup({
+          showMetabaseLinks: false,
+          parameter: createMockUiParameter({
+            fields: [field1],
+            values_source_type: "static-list",
+            values_source_config: {
+              values: [["1", "Label"], ["2"]],
+            },
+          }),
+        });
+
+        await userEvent.click(
+          screen.getByRole("radio", { name: "From connected fields" }),
+        );
+        await userEvent.click(
+          screen.getByRole("radio", { name: "Custom list" }),
+        );
+
+        expect(screen.getByRole("textbox")).toHaveValue("1, Label\n2");
+        expect(screen.getByText("do it once in a model")).toBeInTheDocument();
+        expect(screen.getByText("do it once in a model").tagName).not.toBe("A");
+      });
+    });
+  });
+
+  describe("id parameter", () => {
+    it("should offer only numeric columns as the value field for a numeric id parameter", async () => {
+      const { onSubmit } = await setup({
+        parameter: createMockUiParameter({
+          type: "number/=",
+          sectionId: "id",
+          values_source_type: "card",
+          values_source_config: {
+            card_id: 1,
+          },
+        }),
+        cards: [
+          createMockCard({
+            id: 1,
+            name: "Products",
+            result_metadata: [
+              createMockField({
+                id: 1,
+                name: "id",
+                display_name: "ID",
+                base_type: "type/BigInteger",
+                effective_type: "type/BigInteger",
+                semantic_type: "type/PK",
+              }),
+              createMockField({
+                id: 2,
+                name: "category",
+                display_name: "Category",
+                base_type: "type/Text",
+                effective_type: "type/Text",
+                semantic_type: "type/Category",
+              }),
+            ],
+          }),
+        ],
+      });
+
+      await userEvent.click(screen.getByPlaceholderText(/Pick a column/));
+      expect(
+        screen.queryByRole("option", { name: "Category" }),
+      ).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("option", { name: "ID" }));
+      await userEvent.click(screen.getByRole("button", { name: "Done" }));
+      expect(onSubmit).toHaveBeenCalledWith("card", {
+        card_id: 1,
+        value_field: ["field", "id", { "base-type": "type/BigInteger" }],
+      });
+    });
+
+    it("should show a message when a numeric id parameter has no number columns", async () => {
+      await setup({
+        parameter: createMockUiParameter({
+          type: "number/=",
+          sectionId: "id",
+          values_source_type: "card",
+          values_source_config: {
+            card_id: 1,
+          },
+        }),
+        cards: [
+          createMockCard({
+            id: 1,
+            name: "Products",
+            result_metadata: [
+              createMockField({
+                id: 2,
+                name: "category",
+                display_name: "Category",
+                base_type: "type/Text",
+                effective_type: "type/Text",
+                semantic_type: "type/Category",
+              }),
+            ],
+          }),
+        ],
+      });
+
+      expect(
+        screen.getByText(/This question doesn’t have any number columns/),
+      ).toBeInTheDocument();
+    });
+  });
+});
+
+interface SetupOpts {
+  parameter?: UiParameter;
+  parameterValues?: ParameterValues;
+  cards?: Card[];
+  hasCollectionAccess?: boolean;
+  hasParameterValuesError?: boolean;
+  showMetabaseLinks?: boolean;
+}
+
+const setup = async ({
+  parameter = createMockUiParameter(),
+  parameterValues = createMockParameterValues(),
+  cards = [],
+  hasCollectionAccess = true,
+  hasParameterValuesError = false,
+  showMetabaseLinks = true,
+}: SetupOpts = {}) => {
+  const currentUser = createMockUser();
+  const databases = [createMockDatabase()];
+  const rootCollection = createMockCollection(ROOT_COLLECTION);
+  const personalCollection = createMockCollection({
+    id: currentUser.personal_collection_id,
+  });
+  const onSubmit = jest.fn();
+  const onClose = jest.fn();
+
+  setupDatabasesEndpoints(databases);
+  setupSearchEndpoints([]);
+  setupRecentViewsAndSelectionsEndpoints([]);
+  setupCollectionByIdEndpoint({
+    collections: [personalCollection],
+  });
+  setupCollectionItemsEndpoint({
+    collection: personalCollection,
+    collectionItems: [],
+  });
+
+  if (hasCollectionAccess) {
+    setupCollectionsEndpoints({ collections: [rootCollection] });
+    setupCardsEndpoints(cards);
+    cards.forEach((card) =>
+      setupTableQueryMetadataEndpoint(
+        createMockTable({
+          id: `card__${card.id}`,
+          fields: card.result_metadata ?? [],
+        }),
+      ),
+    );
+  } else {
+    setupUnauthorizedCollectionsEndpoints([rootCollection]);
+    setupUnauthorizedCardsEndpoints(cards);
+  }
+
+  if (!hasParameterValuesError) {
+    setupParameterValuesEndpoints(parameterValues);
+  } else {
+    setupErrorParameterValuesEndpoints();
+  }
+
+  if (!showMetabaseLinks) {
+    setupEnterprisePlugins();
+  }
+
+  renderWithProviders(
+    <ValuesSourceModal
+      parameter={parameter}
+      onSubmit={onSubmit}
+      onClose={onClose}
+    />,
+    {
+      storeInitialState: createMockState({
+        currentUser,
+        entities: createMockEntitiesState({
+          databases: [createMockDatabase()],
+          questions: cards,
+        }),
+        settings: mockSettings({
+          "show-metabase-links": showMetabaseLinks,
+          "token-features": createMockTokenFeatures({ whitelabel: true }),
+        }),
+      }),
+    },
+  );
+
+  await waitForLoaderToBeRemoved();
+
+  return { onSubmit };
+};

@@ -1,0 +1,14 @@
+{:paths
+ ["src" "resources"]
+
+ :deps
+ {}
+
+ :aliases
+ {:oss
+  ;; JDBC driver isn't GPL-compatible
+  {}
+
+  :ee
+  {:extra-deps {com.vertica.jdbc/vertica-jdbc ^:antq/exclude ; update to 24.3 breaks the date tests
+                {:mvn/version "23.4.0-0"}}}}}

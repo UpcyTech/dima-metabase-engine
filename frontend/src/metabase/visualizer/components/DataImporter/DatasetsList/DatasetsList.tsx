@@ -1,0 +1,267 @@
+import { useCallback, useMemo } from "react";
+import { t } from "ttag";
+
+import { useListRecentsQuery, useSearchQuery } from "metabase/api";
+import { useDebouncedValue } from "metabase/common/hooks/use-debounced-value";
+import { useDispatch, useSelector } from "metabase/redux";
+import { Box, Flex, Skeleton } from "metabase/ui";
+import {
+  getDataSources,
+  getDatasets,
+  getVisualizationType,
+  getVisualizerComputedSettings,
+  getVisualizerComputedSettingsForFlatSeries,
+  getVisualizerDatasetColumns,
+} from "metabase/visualizer/selectors";
+import { createDataSource } from "metabase/visualizer/utils";
+import {
+  addDataSource,
+  removeDataSource,
+} from "metabase/visualizer/visualizer.slice";
+import type {
+  DashboardId,
+  SearchResult,
+  VisualizerDataSource,
+  VisualizerDataSourceId,
+} from "metabase-types/api";
+
+import { trackVisualizerDataChanged } from "../../analytics";
+
+import { DatasetsListItem, type Item } from "./DatasetsListItem";
+import { getIsCompatible } from "./getIsCompatible";
+
+const SEARCH_LIMIT = 50;
+// Without a text query, incompatible results are filtered out client-side
+// rather than marked as not recommended, so fetch a wider window to avoid
+// showing an empty list when compatible datasets rank below the limit.
+const NO_QUERY_SEARCH_LIMIT = 200;
+
+function shouldIncludeDashboardQuestion(
+  searchItem: SearchResult,
+  dashboardId: DashboardId | undefined,
+) {
+  return searchItem.dashboard ? searchItem.dashboard.id === dashboardId : true;
+}
+
+interface DatasetsListProps {
+  search: string;
+  setDataSourceCollapsed: (
+    sourceId: VisualizerDataSourceId,
+    collapsed: boolean,
+  ) => void;
+  style?: React.CSSProperties;
+  /**
+   * If true, the component will not render anything but simply load data
+   * so next time it is rendered, it will show the data immediately.
+   */
+  muted?: boolean;
+  /**
+   * The id of the dashboard the visualizer was opened from, or `undefined` when
+   * it wasn't opened from a dashboard. Used to filter out dashboard questions
+   * that belong to other dashboards.
+   */
+  dashboardId: DashboardId | undefined;
+}
+
+export function DatasetsList({
+  search,
+  setDataSourceCollapsed,
+  style,
+  muted,
+  dashboardId,
+}: DatasetsListProps) {
+  const dispatch = useDispatch();
+  const dataSources = useSelector(getDataSources);
+  const dataSourceIds = useMemo(
+    () => new Set(dataSources.map((s) => s.id)),
+    [dataSources],
+  );
+
+  // Get current visualization context
+  const visualizationType = useSelector(getVisualizationType);
+
+  // Get data needed for compatibility checking
+  const columns = useSelector(getVisualizerDatasetColumns);
+  const settings = useSelector(getVisualizerComputedSettings);
+  const computedSettings = useSelector(
+    getVisualizerComputedSettingsForFlatSeries,
+  );
+  const datasets = useSelector(getDatasets);
+
+  const handleAddDataSource = useCallback(
+    (source: VisualizerDataSource) => {
+      trackVisualizerDataChanged("visualizer_datasource_added");
+
+      dispatch(addDataSource(source.id));
+      setDataSourceCollapsed(source.id, false);
+    },
+    [dispatch, setDataSourceCollapsed],
+  );
+
+  const handleRemoveDataSource = useCallback(
+    (source: VisualizerDataSource, forget?: boolean) => {
+      trackVisualizerDataChanged("visualizer_datasource_removed");
+
+      dispatch(removeDataSource({ source, forget }));
+      setDataSourceCollapsed(source.id, true);
+    },
+    [dispatch, setDataSourceCollapsed],
+  );
+
+  const { data: allRecents, isFetching: isListRecentsFetching } =
+    useListRecentsQuery(
+      { include_metadata: true },
+      {
+        refetchOnMountOrArgChange: true,
+      },
+    );
+
+  const { data: visualizationSearchResult, isFetching: isSearchFetching } =
+    useSearchQuery(
+      {
+        q: search.length > 0 ? search : undefined,
+        limit: search.length > 0 ? SEARCH_LIMIT : NO_QUERY_SEARCH_LIMIT,
+        models: ["card", "dataset", "metric"],
+        include_dashboard_questions: true,
+        include_metadata: true,
+        context: "data-picker",
+      },
+      {
+        skip: muted,
+        refetchOnMountOrArgChange: true,
+      },
+    );
+
+  const debouncedIsFetching = useDebouncedValue(
+    isSearchFetching || isListRecentsFetching,
+    300, // Adjust debounce duration as needed
+    (_lastValue, newValue) => newValue === true, // We want instant updates when loading ends
+  );
+
+  const handleSwapDataSources = useCallback(
+    (item: VisualizerDataSource) => {
+      trackVisualizerDataChanged("visualizer_datasource_replaced");
+
+      dataSources.forEach((dataSource) => {
+        handleRemoveDataSource(dataSource, true);
+      });
+      handleAddDataSource(item);
+    },
+    [dataSources, handleAddDataSource, handleRemoveDataSource],
+  );
+
+  const items: Item[] | undefined = useMemo(() => {
+    if (!search && dataSources.length === 0) {
+      if (!allRecents) {
+        return;
+      }
+
+      return allRecents
+        .filter((maybeCard) =>
+          ["card", "dataset", "metric"].includes(maybeCard.model),
+        )
+        .map((card) => ({
+          ...createDataSource("card", card.id, card.name),
+          display: card.display,
+          result_metadata: card.result_metadata,
+          notRecommended: false,
+        }));
+    }
+
+    if (!visualizationSearchResult?.data) {
+      return;
+    }
+
+    const isCompatible = (item: Item) => {
+      if (!item.display || !item.result_metadata) {
+        return item;
+      }
+
+      return getIsCompatible({
+        currentDataset: {
+          display: visualizationType ?? null,
+          columns,
+          settings,
+          computedSettings,
+        },
+        targetDataset: {
+          fields: item.result_metadata,
+        },
+        datasets,
+      });
+    };
+
+    let results = visualizationSearchResult.data
+      .filter(
+        (maybeCard) =>
+          ["card", "dataset", "metric"].includes(maybeCard.model) &&
+          shouldIncludeDashboardQuestion(maybeCard, dashboardId),
+      )
+      .map((card) => ({
+        ...createDataSource("card", +card.id, card.name),
+        display: card.display,
+        result_metadata: card.result_metadata,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (search.length > 0) {
+      results = results.map((item) => ({
+        ...item,
+        notRecommended: !isCompatible(item),
+      }));
+    } else {
+      results = results.filter(isCompatible);
+    }
+
+    return results;
+  }, [
+    visualizationSearchResult,
+    dashboardId,
+    visualizationType,
+    columns,
+    settings,
+    computedSettings,
+    datasets,
+    allRecents,
+    search,
+    dataSources.length,
+  ]);
+
+  if (muted) {
+    return null;
+  }
+
+  return (
+    <Flex
+      gap="xs"
+      direction="column"
+      data-testid="datasets-list"
+      style={{ overflow: "auto", ...style }}
+    >
+      {debouncedIsFetching && (
+        <>
+          <Skeleton height={30} radius="sm" />
+          <Skeleton height={30} mt={6} radius="sm" />
+          <Skeleton height={30} mt={6} radius="sm" />
+          <Skeleton height={30} mt={6} radius="sm" />
+          <Skeleton height={30} mt={6} radius="sm" />
+        </>
+      )}
+      {items && items.length === 0 && (
+        <Box m="auto">{t`No compatible results`}</Box>
+      )}
+      {items && !debouncedIsFetching
+        ? items.map((item, index) => (
+            <DatasetsListItem
+              key={index}
+              item={item}
+              onSwap={handleSwapDataSources}
+              onToggle={handleAddDataSource}
+              onRemove={handleRemoveDataSource}
+              selected={dataSourceIds.has(item.id)}
+            />
+          ))
+        : null}
+    </Flex>
+  );
+}

@@ -1,0 +1,226 @@
+import { type ComponentProps, useEffect, useState } from "react";
+import { t } from "ttag";
+
+import {
+  skipToken,
+  useGetCardQuery,
+  useListCollectionItemsQuery,
+  useSearchQuery,
+} from "metabase/api";
+import { EmptyState } from "metabase/common/components/EmptyState";
+import { LoadingAndErrorWrapper } from "metabase/common/components/LoadingAndErrorWrapper";
+import { PaginationControls } from "metabase/common/components/PaginationControls";
+import { SelectList } from "metabase/common/components/SelectList";
+import type { BaseSelectListItemProps } from "metabase/common/components/SelectList/BaseSelectListItem";
+import { usePagination } from "metabase/common/hooks/use-pagination";
+import { addCardWithVisualization } from "metabase/dashboard/actions";
+import { getDashboardId, getSelectedTabId } from "metabase/dashboard/selectors";
+import { isEmbeddingSdk } from "metabase/embedding-sdk/config";
+import { useGetIcon } from "metabase/hooks/use-icon";
+import { PLUGIN_MODERATION } from "metabase/plugins";
+import { useDispatch, useSelector } from "metabase/redux";
+import { ActionIcon, Box, Flex, Icon, Tooltip } from "metabase/ui";
+import { DEFAULT_SEARCH_LIMIT } from "metabase/utils/constants";
+import { VisualizerModal } from "metabase/visualizer/components/VisualizerModal";
+import type {
+  CardId,
+  CollectionId,
+  CollectionItem,
+  SearchResult,
+} from "metabase-types/api";
+
+import S from "./QuestionList.module.css";
+import { trackVisualizeAnotherWayClicked } from "./analytics";
+
+interface QuestionListProps {
+  searchText: string;
+  collectionId: CollectionId;
+  onSelect: BaseSelectListItemProps["onSelect"];
+  hasCollections: boolean;
+  showOnlyPublicCollections: boolean;
+}
+
+export function QuestionList({
+  searchText,
+  collectionId,
+  onSelect,
+  hasCollections,
+  showOnlyPublicCollections,
+}: QuestionListProps) {
+  const getIcon = useGetIcon();
+  const [queryOffset, setQueryOffset] = useState(0);
+  const { handleNextPage, handlePreviousPage, page, setPage } = usePagination();
+
+  const [visualizerModalCardId, setVisualizerModalCardId] =
+    useState<CardId | null>(null);
+  const isVisualizerModalOpen = !!visualizerModalCardId;
+
+  const selectedTabId = useSelector(getSelectedTabId);
+  const dashboardId = useSelector(getDashboardId);
+
+  useEffect(() => {
+    setQueryOffset(0);
+    setPage(0);
+  }, [searchText, collectionId, setPage]);
+
+  const trimmedSearchText = searchText.trim();
+  const isSearching = !!trimmedSearchText;
+
+  const handleClickNextPage = () => {
+    setQueryOffset(queryOffset + DEFAULT_SEARCH_LIMIT);
+    handleNextPage();
+  };
+
+  const handleClickPreviousPage = () => {
+    setQueryOffset(queryOffset - DEFAULT_SEARCH_LIMIT);
+    handlePreviousPage();
+  };
+
+  const {
+    data: searchData,
+    error: searchError,
+    isFetching: searchIsFetching,
+  } = useSearchQuery(
+    isSearching
+      ? {
+          q: trimmedSearchText,
+          ...(showOnlyPublicCollections && {
+            filter_items_in_personal_collection: "exclude" as const,
+          }),
+          models: isEmbeddingSdk() // FIXME(sdk): remove this logic when v51 is released
+            ? ["card", "dataset"] // ignore "metric" as SDK is used with v50 (or below) now, where we don't have this entity type
+            : ["card", "dataset", "metric"],
+          offset: queryOffset,
+          limit: DEFAULT_SEARCH_LIMIT,
+          context: "entity-picker",
+        }
+      : skipToken,
+  );
+  const {
+    data: itemsData,
+    error: itemsError,
+    isFetching: itemsIsFetching,
+  } = useListCollectionItemsQuery(
+    !isSearching
+      ? {
+          id: collectionId,
+          models: isEmbeddingSdk() // FIXME(sdk): remove this logic when v51 is released
+            ? ["card", "dataset"] // ignore "metric" as SDK is used with v50 (or below) now, where we don't have this entity type
+            : ["card", "dataset", "metric"],
+          offset: queryOffset,
+          limit: DEFAULT_SEARCH_LIMIT,
+        }
+      : skipToken,
+  );
+  const data = isSearching ? searchData : itemsData;
+  const error = isSearching ? searchError : itemsError;
+  const isFetching = isSearching ? searchIsFetching : itemsIsFetching;
+  const dispatch = useDispatch();
+  const list: (SearchResult | CollectionItem)[] = data?.data ?? [];
+
+  if (collectionId === "personal" && !searchText) {
+    return null;
+  }
+
+  if (error || isFetching) {
+    return <LoadingAndErrorWrapper error={error} loading={isFetching} />;
+  }
+
+  const shouldShowEmptyState =
+    list.length === 0 && (isSearching || !hasCollections);
+
+  if (shouldShowEmptyState) {
+    return (
+      <Box my="4rem">
+        <EmptyState message={t`Nothing here`} icon="folder" />
+      </Box>
+    );
+  }
+
+  return (
+    <>
+      <SelectList>
+        {list.map((item) => (
+          <Flex key={item.id} className={S.QuestionListItemRoot} gap="2px">
+            <SelectList.Item
+              id={item.id}
+              classNames={{
+                root: S.QuestionListItemRoot,
+                label: S.QuestionListItemLabel,
+              }}
+              className={S.QuestionListItem}
+              name={item.name}
+              icon={{
+                ...getIcon(item),
+                size: item.model === "dataset" ? 18 : 16,
+                className: S.QuestionListItemIcon,
+              }}
+              onSelect={onSelect}
+              rightIcon={PLUGIN_MODERATION.getStatusIcon(
+                item.moderated_status ?? undefined,
+              )}
+            />
+            <Tooltip label={t`Visualize another way`}>
+              <ActionIcon
+                className={S.VisualizerButton}
+                size="41px"
+                aria-label={t`Visualize another way`}
+                onClick={() => {
+                  trackVisualizeAnotherWayClicked();
+                  setVisualizerModalCardId(Number(item.id));
+                }}
+              >
+                <Icon name="lineandbar" />
+              </ActionIcon>
+            </Tooltip>
+          </Flex>
+        ))}
+      </SelectList>
+      <Flex justify="flex-end">
+        <PaginationControls
+          showTotal
+          total={data?.total}
+          itemsLength={list.length}
+          page={page}
+          pageSize={DEFAULT_SEARCH_LIMIT}
+          onNextPage={handleClickNextPage}
+          onPreviousPage={handleClickPreviousPage}
+        />
+      </Flex>
+      {isVisualizerModalOpen && (
+        <VisualizerModalWithCardId
+          cardId={visualizerModalCardId}
+          dashboardId={dashboardId ?? undefined}
+          onSave={async (visualization) => {
+            // Await the dispatch before closing: the thunk commits the new
+            // dashcard (and its series) only after fetching the referenced
+            // cards, so closing early can race a subsequent dashboard save.
+            await dispatch(
+              addCardWithVisualization({ visualization, tabId: selectedTabId }),
+            );
+            setVisualizerModalCardId(null);
+          }}
+          onClose={() => setVisualizerModalCardId(null)}
+          allowSaveWhenPristine
+        />
+      )}
+    </>
+  );
+}
+
+const VisualizerModalWithCardId = (
+  props: { cardId: CardId } & ComponentProps<typeof VisualizerModal>,
+) => {
+  const { cardId, ...otherProps } = props;
+
+  const { data: card, isLoading: isQuestionLoading } = useGetCardQuery(
+    cardId ? { id: cardId } : skipToken,
+  );
+
+  // TODO improve loading state?
+  if (isQuestionLoading || !card) {
+    return null;
+  }
+
+  return <VisualizerModal initialState={{ cardId: card.id }} {...otherProps} />;
+};

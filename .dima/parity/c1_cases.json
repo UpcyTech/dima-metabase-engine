@@ -1,0 +1,12 @@
+{
+  "schema_version": "dima_engine_c1_selection_v1",
+  "corpus_fingerprint": "fd6e5934438795f64e9ec7d64b74b56056c3c1304aa51598d18c170839b792a0",
+  "cases": [
+    {"id": "PX-01", "anchor_table": "satis_siparisleri"},
+    {"id": "PX-03", "anchor_table": "partiler"},
+    {"id": "PX-06", "anchor_table": "oee_vardiya"},
+    {"id": "PX-07", "anchor_table": "satis_siparisleri"},
+    {"id": "PX-13", "anchor_table": "uretim_aylik_ozet"},
+    {"id": "PX-16", "anchor_table": "partiler"}
+  ]
+}

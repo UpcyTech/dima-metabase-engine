@@ -1,0 +1,220 @@
+(ns metabase.channel.render.js.svg
+  "Functions to render charts as svg strings by invoking the static-viz JavaScript bundle (built by `bun run
+  build-static-viz`) through [[metabase.channel.render.js.protocol]], which runs the JS on a pooled in-process
+  GraalVM context. This namespace has wrapper functions that build the argument map, call the corresponding
+  protocol function, and rasterize the resulting SVG to PNG bytes via Batik."
+  (:require
+   [clojure.string :as str]
+   [metabase.appearance.core :as appearance]
+   [metabase.channel.render.image-buffer :as image-buffer]
+   [metabase.channel.render.js.protocol :as js.protocol]
+   [metabase.channel.render.js.renderer :as renderer]
+   [metabase.channel.render.style :as style]
+   [metabase.lib-be.core :as lib-be]
+   [metabase.premium-features.core :as premium-features])
+  (:import
+   (java.io ByteArrayInputStream ByteArrayOutputStream)
+   (java.nio.charset StandardCharsets)
+   (org.apache.batik.anim.dom SAXSVGDocumentFactory SVGOMDocument)
+   (org.apache.batik.transcoder TranscoderInput TranscoderOutput)
+   (org.apache.batik.transcoder.image PNGTranscoder)
+   (org.w3c.dom Element Node)))
+
+(set! *warn-on-reflection* true)
+
+(defn- post-process
+  "Mutate in place the elements of the svg document. Remove the fill=transparent attribute in favor of
+  fill-opacity=0.0. Our svg image renderer only understands the latter. Mutation is unfortunately necessary as the
+  underlying tree of nodes is inherently mutable"
+  [^SVGOMDocument svg-document & post-fns]
+  (loop [s [(.getDocumentElement svg-document)]]
+    (when-let [^Node node (peek s)]
+      (let [s' (let [nodelist (.getChildNodes node)
+                     length   (.getLength nodelist)]
+                 (apply conj (pop s)
+                        ;; reverse the nodes for the stack so it goes down first child first
+                        (map #(.item nodelist %) (reverse (range length)))))]
+        (reduce (fn [node f] (f node)) node post-fns)
+        (recur s'))))
+  svg-document)
+
+(defn- fix-fill
+  "The batik svg renderer does not understand fill=\"transparent\" so we must change that to
+  fill-opacity=\"0.0\". Previously was just doing a string replacement but now is a proper tree walk fix."
+  [^Node node]
+  (letfn [(element? [x] (instance? Element x))]
+    (if (and (element? node)
+             (.hasAttribute ^Element node "fill")
+             (= (.getAttribute ^Element node "fill") "transparent"))
+      (doto ^Element node
+        (.removeAttribute "fill")
+        (.setAttribute "fill-opacity" "0.0"))
+      node)))
+
+(defn- clear-style-node
+  "The echarts library (whose output we get via the [[*javascript-visualization*]] function) adds a `<style>` tag that
+  we don't need. It has some invalid styles that Batik warns about, but they're all for :hover states, which have no
+  meaning or effect in the static-viz context anyway."
+  [^Node node]
+  (letfn [(element? [x] (instance? Element x))]
+    (if (and (element? node)
+             (= "style" (.getNodeName ^Element node)))
+      (doto ^Element node
+        (.setTextContent ""))
+      node)))
+
+(defn- sanitize-svg
+  "Using a regex of negated allowed characters according to the XML 1.0 spec, replace disallowed characters with an
+  empty string."
+  [svg-string]
+  (let [allowed-chars (re-pattern (str "[^"
+                                       "\u0009"
+                                       "\u000A"
+                                       "\u000D"
+                                       "\u0020-\uD7FF"
+                                       "\uE000-\uFFFD"
+                                       "\u10000-\u10FFFF"
+                                       "]"))]
+    (str/replace svg-string allowed-chars "")))
+
+(defn- parse-svg-string [^String s]
+  (let [s (sanitize-svg s)
+        factory (SAXSVGDocumentFactory. "org.apache.xerces.parsers.SAXParser")]
+    (with-open [is (ByteArrayInputStream. (.getBytes ^String s StandardCharsets/UTF_8))]
+      (.createDocument factory "file:///fake.svg" is))))
+
+(def ^:dynamic ^:private *svg-render-width*
+  "Width to render svg images. Intentionally large to improve quality. Consumers should be aware and resize as
+  needed. Email should include width tags; slack automatically resizes inline and provides a nice detail view when
+  clicked."
+  (float 1200))
+
+(def ^:dynamic ^:private *svg-render-height*
+  "Height to render svg images. If not bound, will preserve aspect ratio of original image."
+  nil)
+
+(def ^:dynamic *chart-size*
+  "When bound to a map `{:width <px> :height <px>}`, isomorphic (ECharts) charts rendered via
+  [[*javascript-visualization*]] use `:width`/`:height` as their intrinsic (logical) SVG
+  dimensions, and PNG rasterization targets those same dimensions (stretching to fit). Used to
+  make a backend chart fill an explicit pixel box -- e.g. a dashboard grid cell -- the way the
+  frontend does. When nil, keeps the legacy behavior (fixed width, aspect-preserving height).
+
+  An optional `:scale` (default 1) multiplies *only the raster* dimensions: the chart is still
+  laid out at `:width`x`:height` (so fonts, labels, and spacing are unchanged), but the SVG is
+  rasterized to `scale`x more pixels -- i.e. supersampling for a crisper image at the same on-page
+  size, without relaying the chart out smaller.
+
+  An optional `:fit-within?` (default false) tells legended charts to treat `:width`x`:height` as
+  the exact output box -- fitting the legend *inside* it rather than stacking it on top (which
+  returns an SVG taller than requested and makes it shrink to fit). Used by the PDF renderer so a
+  chart fills its grid cell's full width."
+  nil)
+
+(def ^:dynamic *svg-background-color*
+  "Background color for rendered PNG images. Set to nil for transparent background.
+  Defaults to white to ensure charts are readable in dark mode email clients."
+  java.awt.Color/WHITE)
+
+(defn- reusing-buffers-transcoder
+  "A [[PNGTranscoder]] whose output ARGB raster is borrowed from the shared [[metabase.channel.render.image-buffer]]
+  pool instead of freshly allocated. Batik calls `createImage` once to mint the (often several-MB) result buffer; we
+  hand it a pooled one and record it in `acquired` (a 1-element atom) so the caller can release it after `transcode`."
+  ^PNGTranscoder [acquired]
+  (proxy [PNGTranscoder] []
+    (createImage [w h]
+      (let [img (image-buffer/acquire w h)]
+        (reset! acquired img)
+        img))))
+
+(defn- render-svg
+  ^bytes [^SVGOMDocument svg-document]
+  (style/register-fonts-if-needed!)
+  (with-open [os (ByteArrayOutputStream.)]
+    (let [^SVGOMDocument fixed-svg-doc (post-process svg-document fix-fill clear-style-node)
+          in                           (TranscoderInput. fixed-svg-doc)
+          out                          (TranscoderOutput. os)
+          acquired                     (atom nil)
+          transcoder                   (reusing-buffers-transcoder acquired)
+          ;; `:scale` (default 1) supersamples the raster only -- the SVG is laid out at the
+          ;; logical :width/:height but rasterized to scale-times more pixels.
+          scale                        (:scale *chart-size* 1)
+          render-width                 (float (or (some-> (:width *chart-size*) (* scale)) *svg-render-width*))
+          render-height                (some-> (or (some-> (:height *chart-size*) (* scale)) *svg-render-height*) float)]
+      (.addTranscodingHint transcoder PNGTranscoder/KEY_WIDTH render-width)
+      (when render-height
+        (.addTranscodingHint transcoder PNGTranscoder/KEY_HEIGHT render-height))
+      (when *svg-background-color*
+        (.addTranscodingHint transcoder PNGTranscoder/KEY_BACKGROUND_COLOR *svg-background-color*))
+      (try
+        (.transcode transcoder in out)
+        (finally
+          ;; Return the borrowed buffer to the pool. Guarded so a release failure can't mask a transcode error.
+          (try (image-buffer/release @acquired) (catch Throwable _)))))
+    (.toByteArray os)))
+
+(defn svg-string->bytes
+  "Convert a string (from svg rendering) an svg document then return the bytes"
+  [s]
+  (-> s parse-svg-string render-svg))
+
+(defn funnel
+  "Clojure entrypoint to render a funnel chart. Data should be vec of [[Step Measure]] where Step is
+
+    {:name name :format format-options}
+
+  and Measure is {:format format-options} and you go and look to
+  frontend/src/metabase/static-viz/components/FunnelChart/types.ts for the actual format options. Returns a byte array
+  of a png file."
+  [data settings]
+  (-> (js.protocol/chart (renderer/renderer)
+                         {:kind          "funnel"
+                          :data          data
+                          :settings      settings
+                          :tokenFeatures (premium-features/token-features)})
+      :content
+      svg-string->bytes))
+
+(defn ^:dynamic *javascript-visualization*
+  "Clojure entrypoint to render javascript visualizations. This functions is dynanic only for testing purposes."
+  [cards-with-data dashcard-viz-settings]
+  (-> (js.protocol/chart
+       (renderer/renderer)
+       {:rawSeries        cards-with-data
+        :dashcardSettings dashcard-viz-settings
+        :options          (cond-> {:applicationColors (appearance/application-colors)
+                                   :startOfWeek (lib-be/start-of-week)
+                                   :customFormatting (appearance/custom-formatting)
+                                   :tokenFeatures (premium-features/token-features)}
+                            *chart-size*
+                            (assoc :width (:width *chart-size*)
+                                   :height (:height *chart-size*)
+                                   :fitWithinBounds (boolean (:fit-within? *chart-size*))))})      (update :type (fnil keyword "unknown"))))
+
+(defn gauge
+  "Clojure entrypoint to render a gauge chart. Returns a byte array of a png file"
+  [card data]
+  (-> (js.protocol/chart (renderer/renderer)
+                         {:kind          "gauge"
+                          :card          card
+                          :data          data
+                          :tokenFeatures (premium-features/token-features)})
+      :content
+      svg-string->bytes))
+
+(def ^:private icon-paths
+  {:dashboard "M32 28a4 4 0 0 1-4 4H4a4.002 4.002 0 0 1-3.874-3H0V4a4 4 0 0 1 4-4h25a3 3 0 0 1 3 3v25zm-4 0V8H4v20h24zM7.273 18.91h10.182v4.363H7.273v-4.364zm0-6.82h17.454v4.365H7.273V12.09zm13.09 6.82h4.364v4.363h-4.363v-4.364z"
+   :bell      "M14.254 5.105c-7.422.874-8.136 7.388-8.136 11.12 0 4.007 0 5.61-.824 6.411-.549.535-1.647.802-3.294.802v4.006h28v-4.006c-1.647 0-2.47 0-3.294-.802-.55-.534-.824-3.205-.824-8.013-.493-5.763-3.205-8.936-8.136-9.518a2.365 2.365 0 0 0 .725-1.701C18.47 2.076 17.364 1 16 1s-2.47 1.076-2.47 2.404c0 .664.276 1.266.724 1.7zM11.849 29c.383 1.556 1.793 2.333 4.229 2.333s3.845-.777 4.229-2.333h-8.458z"})
+
+(defn- icon-svg-string
+  [icon-name color]
+  (str "<svg xmlns=\"http://www.w3.org/2000/svg\"><path d=\"" (get icon-paths icon-name) "\" fill=\"" color "\"/></svg>"))
+
+(defn icon
+  "Entrypoint for rendering an SVG icon as a PNG, with a specific color"
+  [icon-name color]
+  (let [svg-string (icon-svg-string icon-name color)]
+    (binding [*svg-render-width*       (float 33)
+              *svg-render-height*      (float 33)
+              *svg-background-color*   nil]
+      (svg-string->bytes svg-string))))

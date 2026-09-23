@@ -1,0 +1,38 @@
+import { type HTMLAttributes, forwardRef } from "react";
+
+import MetabaseSettings from "metabase/utils/settings";
+import { formatDateTimeWithUnit } from "metabase/visualizations/lib/formatting";
+import type { ColumnSettings, DatetimeUnit } from "metabase-types/api";
+
+type DateTimeProps = HTMLAttributes<HTMLSpanElement> & {
+  value: string | Date | number;
+  unit?: DatetimeUnit;
+};
+
+export const getFormattedTime = (
+  value: string | Date | number,
+  unit?: DatetimeUnit,
+  options: Pick<ColumnSettings, "local"> = {},
+) => {
+  const settingsOptions = MetabaseSettings.formattingOptions();
+  return formatDateTimeWithUnit(value, unit ?? "default", {
+    ...options,
+    ...settingsOptions,
+  });
+};
+
+/**
+ * note: this component intentionally doesn't let you pick a custom date format
+ * because that is an instance setting and should be respected globally
+ */
+export const DateTime = forwardRef<HTMLSpanElement, DateTimeProps>(
+  function DateTime({ value, unit = "default", ...props }: DateTimeProps, ref) {
+    const formattedTime = getFormattedTime(value, unit);
+
+    return (
+      <span ref={ref} {...props}>
+        {formattedTime}
+      </span>
+    );
+  },
+);

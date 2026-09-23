@@ -1,0 +1,83 @@
+import cx from "classnames";
+import { t } from "ttag";
+
+import { ViewButton } from "metabase/common/components/ViewButton";
+import CS from "metabase/css/core/index.css";
+import { useRegisterShortcut } from "metabase/palette/hooks/useRegisterShortcut";
+import { getQuestion, getUiControls } from "metabase/query_builder/selectors";
+import { useDispatch, useSelector } from "metabase/redux";
+import {
+  onCloseChartSettings,
+  onCloseChartType,
+  onOpenChartSettings,
+  onOpenChartType,
+} from "metabase/redux/query-builder";
+import type { QueryBuilderUIControls } from "metabase/redux/store";
+import { Button, Group } from "metabase/ui";
+
+import S from "./LeftViewFooterButtonGroup.module.css";
+
+export const LeftViewFooterButtonGroup = () => {
+  const {
+    isShowingChartSettingsSidebar,
+    isShowingChartTypeSidebar,
+  }: QueryBuilderUIControls = useSelector(getUiControls);
+  const question = useSelector(getQuestion);
+
+  const dispatch = useDispatch();
+
+  const handleVizTypeClick = isShowingChartTypeSidebar
+    ? () => dispatch(onCloseChartType())
+    : () => dispatch(onOpenChartType());
+
+  const handleVizSettingClick = isShowingChartSettingsSidebar
+    ? () => dispatch(onCloseChartSettings())
+    : () => dispatch(onOpenChartSettings());
+
+  useRegisterShortcut(
+    [
+      {
+        id: "query-builder-toggle-viz-types",
+        perform: handleVizTypeClick,
+      },
+      {
+        id: "query-builder-toggle-viz-settings",
+        perform: handleVizSettingClick,
+      },
+    ],
+    [isShowingChartTypeSidebar, isShowingChartSettingsSidebar],
+  );
+
+  return (
+    <Group className={cx(CS.flex1, S.Root)}>
+      <Button.Group className={S.FooterButtonGroup}>
+        <ViewButton
+          medium
+          labelBreakpoint="sm"
+          data-testid="viz-type-button"
+          active={isShowingChartTypeSidebar}
+          className={S.Button}
+          onClick={handleVizTypeClick}
+        >
+          {t`Visualization`}
+        </ViewButton>
+        <ViewButton
+          disabled={question?.display() === "list"}
+          className={S.Button}
+          active={isShowingChartSettingsSidebar}
+          icon="gear"
+          iconSize={16}
+          medium
+          onlyIcon
+          labelBreakpoint="sm"
+          data-testid="viz-settings-button"
+          onClick={
+            isShowingChartSettingsSidebar
+              ? () => dispatch(onCloseChartSettings())
+              : () => dispatch(onOpenChartSettings())
+          }
+        />
+      </Button.Group>
+    </Group>
+  );
+};
