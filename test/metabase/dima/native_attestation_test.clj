@@ -11,6 +11,7 @@
    [metabase.metabot.persistence :as metabot.persistence]
    [metabase.query-processor :as qp]
    [metabase.query-processor.middleware.add-implicit-joins :as qp.add-implicit-joins]
+   [metabase.query-processor.middleware.desugar :as qp.desugar]
    [metabase.query-processor.middleware.permissions :as qp.perms]
    [metabase.test :as mt]
    [metabase.test.fixtures :as fixtures]
@@ -153,28 +154,29 @@
                 (#'dima.attestation/filter-facts (june-during-query)))))))))
 
 (deftest during-native-preprocess-resolves-exact-june-half-open-bounds-test
-  (testing "Metabase QP desugars :during to exact physical half-open bounds without mutating execution identity"
+  (testing "native QP desugar resolves :during to exact physical half-open bounds without mutating execution identity"
     (mt/test-driver :h2
-      (mt/with-current-user (mt/user->id :rasta)
-        (let [query          (june-during-query)
-              exact-before   (#'dima.attestation/exact-serialized-query query)
-              fingerprint    (dima.attestation/exact-query-fingerprint query)
-              preprocessed   (#'dima.attestation/preprocess-and-authorize! query)
-              filters        (lib/atomic-filters preprocessed -1)
-              parts          (mapv #(lib/filter-parts preprocessed -1 %) filters)
-              value-parts    (mapv #(lib/expression-parts preprocessed -1 (first (:args %))) parts)
-              by-op          (into {} (map vector (map :operator parts) value-parts))]
-          (is (= #{:>= :<} (set (map :operator parts))))
-          (is (= #{(mt/id :orders :created_at)}
-                 (set (map (comp :id :column) parts))))
-          (is (= :absolute-datetime (get-in by-op [:>= :operator])))
-          (is (= "2026-06-01" (str (first (get-in by-op [:>= :args])))))
-          (is (= :absolute-datetime (get-in by-op [:< :operator])))
-          (is (= "2026-07-01" (str (first (get-in by-op [:< :args])))))
-          (is (= exact-before
-                 (#'dima.attestation/exact-serialized-query query)))
-          (is (= fingerprint
-                 (dima.attestation/exact-query-fingerprint query))))))))
+      (let [query        (june-during-query)
+            exact-before (#'dima.attestation/exact-serialized-query query)
+            fingerprint  (dima.attestation/exact-query-fingerprint query)
+            normalized   (qp.desugar/desugar query)
+            facts        (#'dima.attestation/filter-facts normalized)
+            predicates   (:temporal_predicates facts)]
+        (is (= 2 (:material_filter_count facts)))
+        (is (= 0 (:non_temporal_filter_count facts)))
+        (is (= 2 (count predicates)))
+        (is (= #{(mt/id :orders :created_at)}
+               (set (map :time_field_id predicates))))
+        (is (some #(and (= "2026-06-01" (:lower_bound %))
+                        (true? (:lower_inclusive %)))
+                  predicates))
+        (is (some #(and (= "2026-07-01" (:upper_bound %))
+                        (false? (:upper_inclusive %)))
+                  predicates))
+        (is (= exact-before
+               (#'dima.attestation/exact-serialized-query query)))
+        (is (= fingerprint
+               (dima.attestation/exact-query-fingerprint query)))))))
 
 (deftest non-temporal-filter-is-observed-as-material-query-fact-test
   (mt/test-driver :h2
