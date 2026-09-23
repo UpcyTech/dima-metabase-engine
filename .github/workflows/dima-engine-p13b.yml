@@ -1,0 +1,101 @@
+name: dima-engine-p13b
+
+on:
+  push:
+    branches: [feat/p13b-native-attestation]
+    paths:
+      - "src/metabase/dima/**"
+      - "test/metabase/dima/**"
+      - "src/metabase/api_routes/routes.clj"
+      - ".dima/docker/Dockerfile.c0"
+      - ".dima/release.json"
+      - ".dima/tools/patch_surface.py"
+      - ".github/workflows/dima-engine-p13b.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
+  CANDIDATE_RUNTIME_TAG: v0.63.18-dima.1-candidate
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 64
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run P13B Dima engine tests
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-attestation-test metabase.dima.api-test]'
+
+      - name: Require Dima namespaces
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.dima.native-attestation 'metabase.dima.api)"
+
+  patch-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 64
+
+      - name: Generate P13B patch surface
+        run: |
+          set -euo pipefail
+          mkdir -p .dima/reports/p13b
+          python .dima/tools/patch_surface.py             --base "$UPSTREAM_SHA"             --head HEAD             --json-out .dima/reports/p13b/DIMA_PATCH_SURFACE.json             --md-out .dima/reports/p13b/DIMA_PATCH_SURFACE.md
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = json.loads(Path(".dima/reports/p13b/DIMA_PATCH_SURFACE.json").read_text())
+          assert p["modified_preexisting_upstream_file_count"] == 1, p
+          assert p["modified_preexisting_upstream_files"] == ["src/metabase/api_routes/routes.clj"], p
+          assert p["deleted_upstream_file_count"] == 0, p
+          assert p["sync_conflict_count"] == 0, p
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dima-engine-p13b-patch-surface-${{ github.sha }}
+          path: .dima/reports/p13b/
+          if-no-files-found: error
+          retention-days: 30
+
+  source-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Build exact P13B candidate from source
+        run: |
+          set -euo pipefail
+          docker build             -f .dima/docker/Dockerfile.c0             --build-arg MB_EDITION=oss             --build-arg VERSION="$CANDIDATE_RUNTIME_TAG"             --build-arg DIMA_ENGINE_REPOSITORY=UpcyTech/dima-metabase-engine             --build-arg DIMA_ENGINE_REVISION_SHA="$GITHUB_SHA"             --build-arg DIMA_ENGINE_UPSTREAM_BASE_SHA="$UPSTREAM_SHA"             --build-arg DIMA_ENGINE_RUNTIME_TAG="$CANDIDATE_RUNTIME_TAG"             --build-arg DIMA_ENGINE_BUILD_IDENTITY="github-actions:${GITHUB_RUN_ID}:${GITHUB_SHA}"             -t dima-engine-p13b:"$GITHUB_SHA" .
+
+      - name: Smoke exact candidate image
+        run: |
+          set -euo pipefail
+          docker run -d --rm             --name dima-p13b-smoke             -p 127.0.0.1:3313:3000             -e DIMA_ENGINE_IMAGE_IDENTITY="local-image:${GITHUB_SHA}"             dima-engine-p13b:"$GITHUB_SHA"
+          trap 'docker logs dima-p13b-smoke || true; docker stop dima-p13b-smoke || true' EXIT
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:3313/api/health | grep -q '"status":"ok"'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
