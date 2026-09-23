@@ -131,8 +131,13 @@
                         (.getBytes value StandardCharsets/UTF_8))]
     (format "%064x" (BigInteger. 1 digest))))
 
+(defn- restore-persisted-query [query]
+  ;; Metabot conversation/message state is stored as JSON. Metabase Lib owns the inverse
+  ;; REST/app-DB boundary and restores serialized enum/keyword forms before inspection.
+  (lib.serialize/prepare-after-deserialization query))
+
 (defn exact-serialized-query
-  "Metabase REST/app-DB serialization boundary for one exact stored pMBQL query."
+  "Metabase REST/app-DB serialization boundary for one exact internal pMBQL query."
   [query]
   (-> query
       lib.serialize/prepare-for-serialization
@@ -247,30 +252,32 @@
              {:occurrence-count (count matches)}))
 
     (let [{:keys [message input output]} (first matches)
-          producer-tool (:function input)
-          producer-query (query-from-output output)]
+          producer-tool      (:function input)
+          persisted-producer (query-from-output output)]
       (when-not (and (= "construct_notebook_query" producer-tool)
                      (true? (:finished message))
                      (nil? (:error message))
                      (nil? (:error output))
-                     (map? producer-query))
+                     (map? persisted-producer))
         (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
                "Requested query id is not bound to one finalized successful construct_notebook_query occurrence"))
-      (let [state-query (conversation-state-query conversation native-query-id)]
-        (when-not (map? state-query)
+      (let [persisted-state (conversation-state-query conversation native-query-id)]
+        (when-not (map? persisted-state)
           (fail! "NATIVE_QUERY_STATE_MISMATCH" 409
                  "Conversation state does not contain the persisted producer query"))
-        (when-not (= (exact-serialized-query producer-query)
-                     (exact-serialized-query state-query))
-          (fail! "NATIVE_QUERY_STATE_MISMATCH" 409
-                 "Persisted producer query and conversation-state query disagree"))
-        {:conversation conversation
-         :message message
-         :tool-call-id (:id output)
-         :producer-tool producer-tool
-         :query state-query
-         :material-query-count (material-query-count message)
-         :authenticated-subject subject}))))
+        (let [producer-query (restore-persisted-query persisted-producer)
+              state-query    (restore-persisted-query persisted-state)]
+          (when-not (= (exact-serialized-query producer-query)
+                       (exact-serialized-query state-query))
+            (fail! "NATIVE_QUERY_STATE_MISMATCH" 409
+                   "Persisted producer query and conversation-state query disagree"))
+          {:conversation conversation
+           :message message
+           :tool-call-id (:id output)
+           :producer-tool producer-tool
+           :query state-query
+           :material-query-count (material-query-count message)
+           :authenticated-subject subject})))))
 
 (defn- stage-numbers [query]
   (range (lib/stage-count query)))
