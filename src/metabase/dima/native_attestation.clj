@@ -34,6 +34,10 @@
   "Test-only in-process override. Production callers never bind this."
   nil)
 
+(def ^:dynamic *env-reader*
+  "Indirection for deterministic identity tests. Production value is System/getenv."
+  #(System/getenv %))
+
 (defn- fail!
   ([code status message]
    (fail! code status message nil))
@@ -44,7 +48,7 @@
                           data)))))
 
 (defn- nonblank-env [name]
-  (some-> (System/getenv name) str/trim not-empty))
+  (some-> (*env-reader* name) str/trim not-empty))
 
 (defn- require-env! [name]
   (or (nonblank-env name)
@@ -181,6 +185,7 @@
 (defn- conversation-state-query [conversation native-query-id]
   (let [state (:state conversation)]
     (or (get-in state [:queries native-query-id])
+        (get-in state [:queries (keyword native-query-id)])
         (get-in state ["queries" native-query-id]))))
 
 (defn- shared-conversation? [conversation messages]
