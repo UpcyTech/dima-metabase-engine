@@ -427,6 +427,28 @@
     (instance? ZonedDateTime value) (str value)
     :else nil))
 
+(defn- textual-column? [column]
+  (when column
+    (let [column-type (or (:effective-type column) (:base-type column))]
+      (and column-type (isa? column-type :type/Text)))))
+
+(defn- textual-equality-predicate [query stage-number filter-clause]
+  (let [{:keys [operator column args]} (lib/filter-parts query stage-number filter-clause)
+        value (first args)]
+    ;; P13C-v1 intentionally certifies exactly one scalar string equality shape.
+    ;; Unsupported non-temporal shapes remain visible through non_temporal_filter_count
+    ;; but do not become guessed typed predicates.
+    (when (and (= operator :=)
+               (textual-column? column)
+               (pos-int? (:id column))
+               (= 1 (count args))
+               (string? value))
+      {:stage_number  stage-number
+       :field_id      (:id column)
+       :operator      (type-name operator)
+       :literal_value value
+       :field_type    (type-name (or (:effective-type column) (:base-type column)))})))
+
 (defn- temporal-predicate [query stage-number filter-clause]
   (let [{:keys [operator column args options]} (lib/filter-parts query stage-number filter-clause)]
     (when (temporal-column? column)
@@ -467,11 +489,14 @@
                          (for [filter-clause (or (lib/atomic-filters query stage-number) [])]
                            {:stage stage-number
                             :clause filter-clause
-                            :temporal (temporal-predicate query stage-number filter-clause)}))
+                            :temporal (temporal-predicate query stage-number filter-clause)
+                            :textual-equality
+                            (textual-equality-predicate query stage-number filter-clause)}))
                        (stage-numbers query)))]
-    {:material_filter_count     (count items)
-     :non_temporal_filter_count (count (remove :temporal items))
-     :temporal_predicates       (vec (keep :temporal items))}))
+    {:material_filter_count        (count items)
+     :non_temporal_filter_count    (count (remove :temporal items))
+     :temporal_predicates          (vec (keep :temporal items))
+     :textual_equality_predicates  (vec (keep :textual-equality items))}))
 
 (defn- preprocess-and-authorize! [query]
   ;; This performs the same native QP preprocessing and current-user permission check
@@ -536,6 +561,7 @@
                            :material_filter_count         (:material_filter_count filters)
                            :non_temporal_filter_count     (:non_temporal_filter_count filters)
                            :temporal_predicates           (:temporal_predicates filters)
+                           :textual_equality_predicates   (:textual_equality_predicates filters)
                            :explicit_join_count           (explicit-join-count query)
                            :implicit_join_count           (count implicit)
                            :implicit_joined_table_ids     implicit-ids

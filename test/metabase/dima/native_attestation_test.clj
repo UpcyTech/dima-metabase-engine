@@ -52,6 +52,17 @@
      (orders-query)
      (lib/count (lib.metadata/field mp (mt/id :orders :created_at))))))
 
+(defn- products-count-query []
+  (let [mp (mt/metadata-provider)]
+    (lib/aggregate
+     (lib/query mp (lib.metadata/table mp (mt/id :products)))
+     (lib/count))))
+
+(defn- product-category-equality-query [value]
+  (let [mp       (mt/metadata-provider)
+        category (lib.metadata/field mp (mt/id :products :category))]
+    (lib/filter (products-count-query) (lib/= category value))))
+
 (defn- june-count-query []
   (let [mp         (mt/metadata-provider)
         created-at (lib.metadata/field mp (mt/id :orders :created_at))]
@@ -223,7 +234,35 @@
           facts    (#'dima.attestation/filter-facts query)]
       (is (= 1 (:material_filter_count facts)))
       (is (= 1 (:non_temporal_filter_count facts)))
-      (is (empty? (:temporal_predicates facts))))))
+      (is (empty? (:temporal_predicates facts)))
+      (is (empty? (:textual_equality_predicates facts))))))
+
+(deftest scalar-textual-equality-is-attested-with-exact-native-facts-test
+  (mt/test-driver :h2
+    (let [query (product-category-equality-query "Gizmo")
+          facts (#'dima.attestation/filter-facts query)
+          predicate (first (:textual_equality_predicates facts))]
+      (is (= 1 (:material_filter_count facts)))
+      (is (= 1 (:non_temporal_filter_count facts)))
+      (is (empty? (:temporal_predicates facts)))
+      (is (= 1 (count (:textual_equality_predicates facts))))
+      (is (= 0 (:stage_number predicate)))
+      (is (= (mt/id :products :category) (:field_id predicate)))
+      (is (= "=" (:operator predicate)))
+      (is (= "Gizmo" (:literal_value predicate)))
+      (is (string? (:field_type predicate))))))
+
+(deftest textual-equality-literal-preserves-exact-case-test
+  (mt/test-driver :h2
+    (let [upper (first (:textual_equality_predicates
+                        (#'dima.attestation/filter-facts
+                         (product-category-equality-query "Gizmo"))))
+          lower (first (:textual_equality_predicates
+                        (#'dima.attestation/filter-facts
+                         (product-category-equality-query "gizmo"))))]
+      (is (= "Gizmo" (:literal_value upper)))
+      (is (= "gizmo" (:literal_value lower)))
+      (is (not= (:literal_value upper) (:literal_value lower))))))
 
 (deftest explicit-join-count-is-observed-from-lib-test
   (mt/test-driver :h2
@@ -297,6 +336,7 @@
             (is (= "all_rows" (get-in manifest [:aggregations 0 :argument_kind])))
             (is (= 2 (:material_filter_count manifest)))
             (is (= 0 (:non_temporal_filter_count manifest)))
+            (is (empty? (:textual_equality_predicates manifest)))
             (is (= 0 (:explicit_join_count manifest)))
             (is (= 0 (:implicit_join_count manifest)))
             (is (= 1 (:material_query_count manifest)))

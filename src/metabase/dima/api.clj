@@ -41,6 +41,14 @@
    [:field_temporal_type ms/NonBlankString]
    [:temporal_unit [:maybe :string]]])
 
+(def ^:private TextualEqualityPredicate
+  [:map
+   [:stage_number ms/IntGreaterThanOrEqualToZero]
+   [:field_id ms/PositiveInt]
+   [:operator [:= "="]]
+   [:literal_value :string]
+   [:field_type ms/NonBlankString]])
+
 (def ^:private ValidationProvenance
   [:map
    [:producer_structured_output [:= "PASSED"]]
@@ -72,6 +80,7 @@
    [:material_filter_count ms/IntGreaterThanOrEqualToZero]
    [:non_temporal_filter_count ms/IntGreaterThanOrEqualToZero]
    [:temporal_predicates [:sequential TemporalPredicate]]
+   [:textual_equality_predicates [:sequential TextualEqualityPredicate]]
    [:explicit_join_count ms/IntGreaterThanOrEqualToZero]
    [:implicit_join_count ms/IntGreaterThanOrEqualToZero]
    [:implicit_joined_table_ids [:sequential ms/PositiveInt]]

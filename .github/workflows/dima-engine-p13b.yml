@@ -12,17 +12,6 @@ on:
       - ".dima/tools/patch_surface.py"
       - ".github/workflows/dima-engine-p13b.yml"
       - ".github/workflows/dima-engine-c1-parity.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "src/metabase/dima/**"
-      - "test/metabase/dima/**"
-      - "src/metabase/api_routes/routes.clj"
-      - ".dima/docker/Dockerfile.c0"
-      - ".dima/release.json"
-      - ".dima/tools/patch_surface.py"
-      - ".github/workflows/dima-engine-p13b.yml"
-      - ".github/workflows/dima-engine-c1-parity.yml"
   workflow_dispatch:
 
 permissions:
