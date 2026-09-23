@@ -1,0 +1,19 @@
+{
+  "schema_version": "dima_engine_release_v1",
+  "upstream": {
+    "repository": "metabase/metabase",
+    "version": "v0.63.18",
+    "sha": "2ba2485c78d7e00a9a25f82c00fc201da71590c4"
+  },
+  "engine": {
+    "repository": "UpcyTech/dima-metabase-engine",
+    "revision": 0,
+    "version": "0.63.18-dima.0",
+    "semantic_behavior_changes": 0
+  },
+  "policy": {
+    "customer_specific_forks": false,
+    "automatic_upstream_promotion": false,
+    "published_history_rebase": false
+  }
+}

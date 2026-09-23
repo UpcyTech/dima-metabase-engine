@@ -1,0 +1,117 @@
+name: dima-engine-upstream-sync-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Exact upstream stable tag/ref to evaluate"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add/fetch canonical upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/metabase/metabase.git 2>/dev/null ||             git remote set-url upstream https://github.com/metabase/metabase.git
+          git fetch upstream --tags --force
+
+      - name: Resolve exact candidate and create sync branch
+        id: resolve
+        shell: bash
+        env:
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+        run: |
+          set -euo pipefail
+          candidate_sha="$(git rev-parse "$UPSTREAM_REF^{commit}")"
+          safe="$(printf '%s' "$UPSTREAM_REF" | tr '/:@ ' '----' | tr -cd 'A-Za-z0-9._-')"
+          branch="sync/$safe"
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          git switch -C "$branch" origin/main
+
+      - name: Attempt candidate-only upstream integration
+        id: merge
+        shell: bash
+        env:
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          CANDIDATE_SHA: ${{ steps.resolve.outputs.candidate_sha }}
+        run: |
+          set +e
+          git -c user.name="dima-sync-bot" -c user.email="dima-sync-bot@users.noreply.github.com"             merge --no-ff --no-commit "$CANDIDATE_SHA"
+          rc=$?
+          mkdir -p .dima/reports
+          if [ "$rc" -ne 0 ]; then
+            git diff --name-only --diff-filter=U | sort > .dima/reports/conflicts.txt
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          conflicts=[x for x in Path(".dima/reports/conflicts.txt").read_text().splitlines() if x]
+          Path(".dima/reports/sync_report.json").write_text(json.dumps({
+            "status":"CONFLICT",
+            "conflict_count":len(conflicts),
+            "conflicts":conflicts,
+            "manual_promotion":True,
+          },indent=2)+"\n")
+          PY
+            git merge --abort || true
+            exit 1
+          fi
+          git -c user.name="dima-sync-bot" -c user.email="dima-sync-bot@users.noreply.github.com"             commit -m "sync(upstream): candidate ${{ inputs.upstream_ref }}"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path(".dima/reports/sync_report.json").write_text(json.dumps({
+            "status":"MERGED_CANDIDATE",
+            "upstream_ref":os.environ.get("UPSTREAM_REF"),
+            "candidate_sha":os.environ.get("CANDIDATE_SHA"),
+            "conflict_count":0,
+            "manual_promotion":True,
+          },indent=2)+"\n")
+          PY
+      - name: Generate patch-surface candidate report
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .dima/tools/patch_surface.py             --base "${{ steps.resolve.outputs.candidate_sha }}"             --head HEAD             --json-out .dima/reports/DIMA_PATCH_SURFACE.json             --md-out .dima/reports/DIMA_PATCH_SURFACE.md
+
+      - name: Build candidate image from fork source
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build             --build-arg MB_EDITION=oss             --build-arg VERSION="sync-${{ inputs.upstream_ref }}"             -t dima-metabase-engine:sync-candidate             .
+
+      - name: Push candidate branch only after compile/build success
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin "HEAD:refs/heads/${{ steps.resolve.outputs.branch }}"
+
+      - name: Upload sync evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dima-engine-sync-${{ github.run_id }}
+          path: .dima/reports/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Explicit no-promotion notice
+        if: always()
+        run: |
+          echo "SYNC CANDIDATE ONLY. This workflow never promotes main or production."
