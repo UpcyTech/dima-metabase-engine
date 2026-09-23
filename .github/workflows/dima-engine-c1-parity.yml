@@ -2,11 +2,6 @@ name: dima-engine-c1-parity
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".dima/parity/**"
-      - ".github/workflows/dima-engine-c1-parity.yml"
 
 permissions:
   contents: read
