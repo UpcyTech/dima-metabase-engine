@@ -97,13 +97,14 @@
   "Attest one already-produced native Metabot query by server-side occurrence identity only."
   [_route-params
    _query-params
-   {:keys [conversation_id native_query_id]}
+   body
    :- [:map {:closed true}
        [:conversation_id ms/UUIDString]
        [:native_query_id ms/NonBlankString]]]
-  (dima.attestation/attest-native-query!
-   {:conversation_id (UUID/fromString conversation_id)
-    :native_query_id native_query_id}))
+  (let [{:keys [conversation_id native_query_id]} body]
+    (dima.attestation/attest-native-query!
+     {:conversation_id (UUID/fromString conversation_id)
+      :native_query_id native_query_id})))
 
 (def keep-me
   "Require target for the root API router."
