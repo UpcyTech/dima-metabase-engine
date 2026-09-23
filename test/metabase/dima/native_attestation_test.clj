@@ -174,6 +174,11 @@
       (binding [dima.attestation/*env-reader* #(get env %)]
         (is (= "ENGINE_IDENTITY_INVALID"
                (exception-code dima.attestation/runtime-identity))))))
+  (testing "runtime instance identity is mandatory"
+    (binding [dima.attestation/*runtime-identity-override*
+              (dissoc test-runtime :runtime_instance_id)]
+      (is (= "ENGINE_IDENTITY_INCOMPLETE"
+             (exception-code dima.attestation/runtime-identity)))))
   (testing "runtime instance identity is stable for one process"
     (binding [dima.attestation/*runtime-identity-override* test-runtime]
       (is (= (:runtime_instance_id (dima.attestation/runtime-identity))
@@ -259,6 +264,19 @@
             (persist-turn! {:conversation-id convo-id :query-id query-id
                             :query (count-star-query) :user-id owner-id
                             :finished? false})
+            (is (= "NATIVE_QUERY_PRODUCER_INVALID"
+                   (exception-code
+                    #(binding [dima.attestation/*runtime-identity-override* test-runtime]
+                       (dima.attestation/attest-native-query!
+                        {:conversation_id (java.util.UUID/fromString convo-id)
+                         :native_query_id query-id}))))))))
+      (testing "errored producer turn"
+        (let [convo-id (str (random-uuid))
+              query-id "errored"]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id :query-id query-id
+                            :query (count-star-query) :user-id owner-id
+                            :error {:message "producer failed"}})
             (is (= "NATIVE_QUERY_PRODUCER_INVALID"
                    (exception-code
                     #(binding [dima.attestation/*runtime-identity-override* test-runtime]
