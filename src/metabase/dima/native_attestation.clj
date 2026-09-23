@@ -13,6 +13,7 @@
    [metabase.query-processor :as qp]
    [metabase.query-processor.middleware.permissions :as qp.perms]
    [metabase.query-processor.preprocess :as qp.preprocess]
+   [metabase.query-processor.store :as qp.store]
    [metabase.types.core]
    [metabase.util :as u]
    [metabase.util.json :as json]
@@ -390,11 +391,13 @@
 
 (defn- preprocess-and-authorize! [query]
   ;; This performs the same native QP preprocessing and current-user permission check
-  ;; without compiling for a driver or executing the analytical query.
-  (let [preprocessed (qp.preprocess/preprocess
-                      (qp/userland-query-with-default-constraints query))]
-    (qp.perms/check-query-permissions* preprocessed)
-    preprocessed))
+  ;; without compiling for a driver or executing the analytical query. Permission
+  ;; calculation requires the QP metadata store to stay bound across both operations.
+  (qp.store/with-metadata-provider (lib/database-id query)
+    (let [preprocessed (qp.preprocess/preprocess
+                        (qp/userland-query-with-default-constraints query))]
+      (qp.perms/check-query-permissions* preprocessed)
+      preprocessed)))
 
 (defn- attestation-id [{:keys [conversation-id assistant-message-id tool-call-id native-query-id fingerprint runtime-instance-id]}]
   (str "dima_att_"
