@@ -22,7 +22,7 @@
 (defn- june-query []
   (let [mp         (mt/metadata-provider)
         table      (lib.metadata/table mp (mt/id :orders))
-        created-at (lib.metadata/field mp (mt/id :orders :created-at))]
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))]
     (-> (lib/query mp table)
         (lib/aggregate (lib/count))
         (lib/filter (lib/>= created-at "2026-06-01"))
