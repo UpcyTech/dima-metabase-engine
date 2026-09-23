@@ -1,1 +1,0 @@
-export { MetricToolbar } from "./MetricToolbar";

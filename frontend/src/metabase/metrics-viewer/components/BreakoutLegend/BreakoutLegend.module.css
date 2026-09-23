@@ -1,8 +1,0 @@
-.root {
-  flex-shrink: 0;
-  overflow-y: auto;
-}
-
-.dot {
-  flex-shrink: 0;
-}

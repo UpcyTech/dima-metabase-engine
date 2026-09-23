@@ -1,1 +1,0 @@
-export { DimensionPickerSidebar } from "./DimensionPickerSidebar";

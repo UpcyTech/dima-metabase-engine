@@ -1,1 +1,0 @@
-export { SourceColorIndicator } from "./SourceColorIndicator";

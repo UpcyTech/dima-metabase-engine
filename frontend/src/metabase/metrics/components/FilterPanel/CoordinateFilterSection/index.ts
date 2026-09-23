@@ -1,1 +1,0 @@
-export { CoordinateFilterSection } from "./CoordinateFilterSection";

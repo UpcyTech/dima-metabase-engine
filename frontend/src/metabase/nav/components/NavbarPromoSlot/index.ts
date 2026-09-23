@@ -1,1 +1,0 @@
-export { NavbarPromoSlot } from "./NavbarPromoSlot";

@@ -1,1 +1,0 @@
-export { TableActionsMenu } from "./TableActionsMenu";

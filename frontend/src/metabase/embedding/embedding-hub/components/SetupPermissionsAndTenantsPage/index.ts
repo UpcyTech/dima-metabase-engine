@@ -1,1 +1,0 @@
-export { SetupPermissionsAndTenantsPage } from "./SetupPermissionsAndTenantsPage";

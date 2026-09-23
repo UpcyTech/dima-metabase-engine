@@ -1,1 +1,0 @@
-export { NotificationDetailSidebar } from "./NotificationDetailSidebar";

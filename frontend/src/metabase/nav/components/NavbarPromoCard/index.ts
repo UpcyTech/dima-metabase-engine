@@ -1,1 +1,0 @@
-export { NavbarPromoCard } from "./NavbarPromoCard";

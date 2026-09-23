@@ -1,1 +1,0 @@
-export { AuthenticationCard } from "./AuthenticationCard";

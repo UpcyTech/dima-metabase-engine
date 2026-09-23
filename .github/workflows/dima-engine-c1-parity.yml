@@ -9,7 +9,7 @@ permissions:
 
 env:
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  CANDIDATE_RUNTIME_TAG: v0.63.18-dima.1-candidate
+  CANDIDATE_RUNTIME_TAG: v0.63.18-dima.2-candidate
   DIMA_FORK_IMAGE: dima-engine-c1-candidate:${{ github.event.pull_request.head.sha || github.sha }}
   PLATFORM_SHA: e35b68e4b7f60fc46c677317e7a001a1d66e88ac
   BOYAHANE_SHA: f0c4a6b053ead52ca2eac80002c448323dc34a35

@@ -1,1 +1,0 @@
-export { MetricAbout } from "./MetricAbout";

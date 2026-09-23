@@ -1,1 +1,0 @@
-export { NewMetricPage } from "./NewMetricPage";

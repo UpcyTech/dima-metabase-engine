@@ -1,8 +1,0 @@
-.root {
-  border-radius: var(--mantine-radius-md);
-  overflow: hidden;
-}
-
-.bordered {
-  border: 1px solid var(--mb-color-border-neutral);
-}

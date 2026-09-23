@@ -1,8 +1,0 @@
-/* This should be applied on document.body during dragging. */
-.grabbing {
-  cursor: grabbing;
-}
-
-.grabbing * {
-  cursor: grabbing;
-}

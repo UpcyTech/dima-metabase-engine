@@ -30,7 +30,7 @@ permissions:
 
 env:
   UPSTREAM_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
-  CANDIDATE_RUNTIME_TAG: v0.63.18-dima.1-candidate
+  CANDIDATE_RUNTIME_TAG: v0.63.18-dima.2-candidate
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:

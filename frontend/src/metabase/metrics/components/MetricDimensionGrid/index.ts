@@ -1,1 +1,0 @@
-export { MetricDimensionGrid } from "./MetricDimensionGrid";

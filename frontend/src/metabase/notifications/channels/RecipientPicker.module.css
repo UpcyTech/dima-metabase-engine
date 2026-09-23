@@ -1,8 +1,0 @@
-.tokenField {
-  background: var(--mb-color-background_page-primary);
-}
-
-.ErrorMessage {
-  color: var(--mb-color-feedback-negative);
-  margin-top: 0.5rem;
-}
