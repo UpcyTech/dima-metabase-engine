@@ -25,15 +25,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 2
+          fetch-depth: 3
           fetch-tags: false
 
       - name: Verify exact base ancestry and immutable base branch
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "$DIMA_UPSTREAM_BASE_SHA"
-          git fetch --no-tags origin refs/heads/upstream/base-v0.63.18:refs/remotes/origin/upstream/base-v0.63.18
+          git fetch --depth=1 --no-tags origin refs/heads/upstream/base-v0.63.18:refs/remotes/origin/upstream/base-v0.63.18
           git merge-base --is-ancestor "$DIMA_UPSTREAM_BASE_SHA" HEAD
           test "$(git rev-parse refs/remotes/origin/upstream/base-v0.63.18^{commit})" = "$DIMA_UPSTREAM_BASE_SHA"
 
