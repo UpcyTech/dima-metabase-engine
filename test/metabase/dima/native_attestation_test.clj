@@ -20,6 +20,7 @@
    [metabase.test.fixtures :as fixtures]
    [toucan2.core :as t2]))
 
+; P13B native metric provider-free probe marker: no production behavior.
 (use-fixtures :once (fixtures/initialize :db))
 
 (def ^:private test-runtime
