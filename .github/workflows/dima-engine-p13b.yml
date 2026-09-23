@@ -2,7 +2,7 @@ name: dima-engine-p13b
 
 on:
   push:
-    branches: [feat/p13b-native-attestation]
+    branches: [feat/p13b-native-attestation, fix/p13b-during-attestation]
     paths:
       - "src/metabase/dima/**"
       - "test/metabase/dima/**"
