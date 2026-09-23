@@ -63,29 +63,41 @@
            {:identity-field field}))
   value)
 
+(defn- validate-runtime-identity! [identity]
+  (doseq [field [:repository :revision_sha :upstream_base_sha :runtime_tag
+                 :build_identity :image_identity :runtime_instance_id]]
+    (when (str/blank? (some-> (get identity field) str))
+      (fail! "ENGINE_IDENTITY_INCOMPLETE" 503
+             (str "Required engine identity fact is missing: " (name field))
+             {:identity-field (name field)})))
+  (assert-full-sha! "revision_sha" (:revision_sha identity))
+  (assert-full-sha! "upstream_base_sha" (:upstream_base_sha identity))
+  (when-not (= (:repository identity) engine-repository)
+    (fail! "ENGINE_IDENTITY_INVALID" 503
+           "Engine repository identity does not match the certified Dima engine repository"))
+  (when-not (= (:upstream_base_sha identity) pinned-upstream-sha)
+    (fail! "ENGINE_IDENTITY_INVALID" 503
+           "Engine upstream base does not match the pinned P13B upstream"))
+  (try
+    (UUID/fromString (str (:runtime_instance_id identity)))
+    (catch IllegalArgumentException _
+      (fail! "ENGINE_IDENTITY_INVALID" 503
+             "runtime_instance_id must be a UUID"
+             {:identity-field "runtime_instance_id"})))
+  identity)
+
 (defn runtime-identity
   "Return the request-relevant Dima engine identity. Missing build/deployment facts fail closed."
   []
-  (or *runtime-identity-override*
-      (let [repository        (or (nonblank-env "DIMA_ENGINE_REPOSITORY") engine-repository)
-            revision-sha      (assert-full-sha! "revision_sha" (require-env! "DIMA_ENGINE_REVISION_SHA"))
-            upstream-base-sha (assert-full-sha! "upstream_base_sha" (require-env! "DIMA_ENGINE_UPSTREAM_BASE_SHA"))
-            runtime-tag       (require-env! "DIMA_ENGINE_RUNTIME_TAG")
-            build-identity    (require-env! "DIMA_ENGINE_BUILD_IDENTITY")
-            image-identity    (require-env! "DIMA_ENGINE_IMAGE_IDENTITY")]
-        (when-not (= repository engine-repository)
-          (fail! "ENGINE_IDENTITY_INVALID" 503
-                 "Engine repository identity does not match the certified Dima engine repository"))
-        (when-not (= upstream-base-sha pinned-upstream-sha)
-          (fail! "ENGINE_IDENTITY_INVALID" 503
-                 "Engine upstream base does not match the pinned P13B upstream"))
-        {:repository          repository
-         :revision_sha        revision-sha
-         :upstream_base_sha   upstream-base-sha
-         :runtime_tag         runtime-tag
-         :build_identity      build-identity
-         :image_identity      image-identity
-         :runtime_instance_id runtime-instance-id})))
+  (validate-runtime-identity!
+   (or *runtime-identity-override*
+       {:repository          (or (nonblank-env "DIMA_ENGINE_REPOSITORY") engine-repository)
+        :revision_sha        (require-env! "DIMA_ENGINE_REVISION_SHA")
+        :upstream_base_sha   (require-env! "DIMA_ENGINE_UPSTREAM_BASE_SHA")
+        :runtime_tag         (require-env! "DIMA_ENGINE_RUNTIME_TAG")
+        :build_identity      (require-env! "DIMA_ENGINE_BUILD_IDENTITY")
+        :image_identity      (require-env! "DIMA_ENGINE_IMAGE_IDENTITY")
+        :runtime_instance_id runtime-instance-id})))
 
 (defn- json-wire-value [value]
   ;; Round-trip through Metabase's own JSON encoder so keywords and other wire values
