@@ -6,17 +6,21 @@
    [metabase.lib.core :as lib]
    [metabase.lib.filter :as lib.filter]
    [metabase.lib.metadata :as lib.metadata]
+   [metabase.lib.test-util :as lib.tu]
    [metabase.lib.test-metadata :as meta]
    [metabase.lib.test-util.macros :as lib.tu.macros]
    [metabase.metabot.persistence :as metabot.persistence]
    [metabase.query-processor :as qp]
    [metabase.query-processor.middleware.add-implicit-joins :as qp.add-implicit-joins]
    [metabase.query-processor.middleware.desugar :as qp.desugar]
+   [metabase.query-processor.middleware.fetch-source-query :as qp.fetch-source-query]
+   [metabase.query-processor.middleware.metrics :as qp.metrics]
    [metabase.query-processor.middleware.permissions :as qp.perms]
    [metabase.test :as mt]
    [metabase.test.fixtures :as fixtures]
    [toucan2.core :as t2]))
 
+; P13B native metric provider-free probe marker: no production behavior.
 (use-fixtures :once (fixtures/initialize :db))
 
 (def ^:private test-runtime
@@ -61,6 +65,39 @@
     (lib/filter
      (count-star-query)
      (lib.filter/during created-at "2026-06-01" :month))))
+
+(def ^:private probe-metric-id 900001)
+(def ^:private probe-metric-entity-id "p13bmetricprobe000000001")
+
+(defn- metric-probe-query
+  [aggregation-fn]
+  (let [base-mp          (mt/metadata-provider)
+        orders           (lib.metadata/table base-mp (mt/id :orders))
+        definition-query (lib/aggregate (lib/query base-mp orders)
+                                        (aggregation-fn base-mp))
+        metric           {:lib/type      :metadata/card
+                          :id            probe-metric-id
+                          :entity-id     probe-metric-entity-id
+                          :database-id   (mt/id)
+                          :table-id      (mt/id :orders)
+                          :name          "P13B Probe Metric"
+                          :type          :metric
+                          :dataset-query definition-query}
+        mp               (lib/composed-metadata-provider
+                          base-mp
+                          (lib.tu/mock-metadata-provider {:cards [metric]}))
+        query            (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                             (lib/aggregate (lib.metadata/metric mp probe-metric-id)))]
+    {:metric metric
+     :query query}))
+
+(defn- metric-observation-view
+  [query]
+  (-> query
+      (assoc-in [:info :pivot/original-query] query)
+      (#'qp.fetch-source-query/resolve-source-cards)
+      (#'qp.metrics/adjust)
+      (dissoc :info)))
 
 (defn- tool-parts
   [{:keys [query-id query call-id producer]
@@ -528,3 +565,149 @@
                     nil
                     (catch clojure.lang.ExceptionInfo e e))]
         (is (= 403 (:status-code (ex-data error))))))))
+
+(deftest native-metric-count-star-expansion-is-observation-only-test
+  (testing "native metric identity survives in original pMBQL while Metabase expands its COUNT(*) definition for observation"
+    (let [{:keys [query]} (metric-probe-query (fn [_] (lib/count)))
+          exact-before    (#'dima.attestation/exact-serialized-query query)
+          fingerprint     (dima.attestation/exact-query-fingerprint query)
+          original-aggs   (lib/aggregations query)
+          metric-meta     (lib.metadata/metric query probe-metric-id)
+          observed        (metric-observation-view query)
+          facts           (#'dima.attestation/aggregation-facts observed)]
+      (is (= 1 (count original-aggs)))
+      (is (= :metric (first (first original-aggs))))
+      (is (= probe-metric-id (nth (first original-aggs) 2)))
+      (is (= probe-metric-entity-id (:entity-id metric-meta)))
+      (is (= [{:operator "count"
+               :argument_kind "all_rows"
+               :referenced_field_ids []
+               :distinct false}]
+             facts))
+      (is (= exact-before (#'dima.attestation/exact-serialized-query query)))
+      (is (= fingerprint (dima.attestation/exact-query-fingerprint query))))))
+
+(deftest native-metric-count-field-does-not-expand-to-count-star-test
+  (testing "COUNT(field) remains distinguishable from canonical COUNT(*) after native metric expansion"
+    (let [{:keys [query]}
+          (metric-probe-query
+           (fn [mp]
+             (lib/count (lib.metadata/field mp (mt/id :orders :created_at)))))
+          facts (#'dima.attestation/aggregation-facts (metric-observation-view query))]
+      (is (= 1 (count facts)))
+      (is (= "count" (:operator (first facts))))
+      (is (= "field" (:argument_kind (first facts))))
+      (is (= [(mt/id :orders :created_at)]
+             (:referenced_field_ids (first facts))))
+      (is (false? (:distinct (first facts)))))))
+
+(deftest native-metric-distinct-field-does-not-expand-to-count-star-test
+  (testing "DISTINCT(field) remains distinguishable from canonical COUNT(*) after native metric expansion"
+    (let [{:keys [query]}
+          (metric-probe-query
+           (fn [mp]
+             (lib/distinct (lib.metadata/field mp (mt/id :orders :created_at)))))
+          facts (#'dima.attestation/aggregation-facts (metric-observation-view query))]
+      (is (= 1 (count facts)))
+      (is (= "distinct" (:operator (first facts))))
+      (is (= "field" (:argument_kind (first facts))))
+      (is (= [(mt/id :orders :created_at)]
+             (:referenced_field_ids (first facts))))
+      (is (true? (:distinct (first facts)))))))
+
+(deftest native-metric-observation-contract-retains-reference-and-expanded-facts-test
+  (let [{:keys [query]} (metric-probe-query (fn [_] (lib/count)))
+        exact-before     (#'dima.attestation/exact-serialized-query query)
+        fingerprint      (dima.attestation/exact-query-fingerprint query)
+        refs             (#'dima.attestation/native-metric-references query)
+        observed         (metric-observation-view query)
+        facts            (#'dima.attestation/attested-aggregation-facts query observed refs)]
+    (is (= [{:stage_number 0
+             :aggregation_index 0
+             :metabase_metric_id probe-metric-id
+             :metabase_metric_entity_id probe-metric-entity-id}]
+           refs))
+    (is (= [{:operator "count"
+             :argument_kind "all_rows"
+             :referenced_field_ids []
+             :distinct false}]
+           facts))
+    (is (= exact-before (#'dima.attestation/exact-serialized-query query)))
+    (is (= fingerprint (dima.attestation/exact-query-fingerprint query)))))
+
+(deftest persisted-native-metric-occurrence-attests-with-original-query-identity-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "native-metric-q"
+          definition (count-star-query)]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "P13B Native Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [mp (mt/metadata-provider)
+              created-at (lib.metadata/field mp (mt/id :orders :created_at))
+              query (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                        (lib/aggregate (lib.metadata/metric mp metric-id))
+                        (lib/filter (lib.filter/during created-at "2026-06-01" :month)))
+              exact (#'dima.attestation/exact-serialized-query query)
+              fingerprint (dima.attestation/exact-query-fingerprint query)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (binding [dima.attestation/*runtime-identity-override* test-runtime]
+              (let [{:keys [exact_serialized_pmbql manifest]}
+                    (dima.attestation/attest-native-query!
+                     {:conversation_id (java.util.UUID/fromString convo-id)
+                      :native_query_id query-id})]
+                (is (= exact exact_serialized_pmbql))
+                (is (= fingerprint (:exact_pmbql_fingerprint manifest)))
+                (is (= [{:operator "count"
+                         :argument_kind "all_rows"
+                         :referenced_field_ids []
+                         :distinct false}]
+                       (:aggregations manifest)))
+                (is (= [{:stage_number 0
+                         :aggregation_index 0
+                         :metabase_metric_id metric-id
+                         :metabase_metric_entity_id metric-entity-id}]
+                       (:native_metric_references manifest)))
+                (is (= 2 (:material_filter_count manifest)))
+                (is (= 2 (count (:temporal_predicates manifest))))
+                (is (= fingerprint
+                       (dima.attestation/exact-query-fingerprint exact_serialized_pmbql)))))))))))
+
+(deftest native-metric-expanded-count-field-is-not-count-star-test
+  (let [{:keys [query]}
+        (metric-probe-query
+         (fn [mp]
+           (lib/count (lib.metadata/field mp (mt/id :orders :created_at)))))
+        refs (#'dima.attestation/native-metric-references query)
+        facts (#'dima.attestation/attested-aggregation-facts
+               query
+               (metric-observation-view query)
+               refs)]
+    (is (= "count" (:operator (first facts))))
+    (is (= "field" (:argument_kind (first facts))))
+    (is (= [(mt/id :orders :created_at)]
+           (:referenced_field_ids (first facts))))))
+
+(deftest native-metric-expanded-distinct-field-is-not-count-star-test
+  (let [{:keys [query]}
+        (metric-probe-query
+         (fn [mp]
+           (lib/distinct (lib.metadata/field mp (mt/id :orders :created_at)))))
+        refs (#'dima.attestation/native-metric-references query)
+        facts (#'dima.attestation/attested-aggregation-facts
+               query
+               (metric-observation-view query)
+               refs)]
+    (is (= "distinct" (:operator (first facts))))
+    (is (= "field" (:argument_kind (first facts))))
+    (is (true? (:distinct (first facts))))))

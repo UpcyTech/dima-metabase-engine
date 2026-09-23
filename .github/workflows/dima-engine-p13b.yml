@@ -2,7 +2,7 @@ name: dima-engine-p13b
 
 on:
   push:
-    branches: [feat/p13b-native-attestation, fix/p13b-during-attestation]
+    branches: [feat/p13b-native-attestation, fix/p13b-during-attestation, fix/p13b-native-metric-attestation]
     paths:
       - "src/metabase/dima/**"
       - "test/metabase/dima/**"
@@ -30,7 +30,7 @@ permissions:
 
 env:
   UPSTREAM_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
-  CANDIDATE_RUNTIME_TAG: v0.63.18-dima.2-candidate
+  CANDIDATE_RUNTIME_TAG: v0.63.18-dima.3-candidate
   CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:

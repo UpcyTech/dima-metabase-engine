@@ -337,6 +337,56 @@
                   (or (lib/aggregations query stage-number) [])))
            (stage-numbers query))))
 
+(defn- native-metric-reference
+  [query stage-number aggregation-index aggregation]
+  (when (= :metric (first aggregation))
+    (let [metric-id (nth aggregation 2 nil)]
+      (when-not (pos-int? metric-id)
+        (fail! "NATIVE_METRIC_REFERENCE_INVALID" 422
+               "Native metric reference must resolve to a positive Metabase metric id"
+               {:stage-number stage-number
+                :aggregation-index aggregation-index}))
+      (let [metric    (lib.metadata/metric query metric-id)
+            entity-id (:entity-id metric)]
+        (when-not (and (map? metric) (not (str/blank? entity-id)))
+          (fail! "NATIVE_METRIC_REFERENCE_INVALID" 422
+                 "Native metric reference has no stable Metabase entity identity"
+                 {:stage-number stage-number
+                  :aggregation-index aggregation-index
+                  :metabase-metric-id metric-id}))
+        {:stage_number stage-number
+         :aggregation_index aggregation-index
+         :metabase_metric_id metric-id
+         :metabase_metric_entity_id entity-id}))))
+
+(defn- native-metric-references [query]
+  (vec
+   (mapcat
+    (fn [stage-number]
+      (keep-indexed
+       (fn [aggregation-index aggregation]
+         (native-metric-reference query stage-number aggregation-index aggregation))
+       (or (lib/aggregations query stage-number) [])))
+    (stage-numbers query))))
+
+(defn- attested-aggregation-facts
+  [query preprocessed native-metric-refs]
+  (if (empty? native-metric-refs)
+    (aggregation-facts query)
+    (let [original-count (count (aggregation-facts query))
+          expanded       (aggregation-facts preprocessed)]
+      ;; This bounded P13B seam certifies exactly one native metric aggregation.
+      ;; Do not silently pair/flatten more complex metric algebra.
+      (when-not (and (= 1 (count native-metric-refs))
+                     (= 1 original-count)
+                     (= 1 (count expanded)))
+        (fail! "NATIVE_METRIC_EXPANSION_UNSUPPORTED" 422
+               "P13B-v1 certifies one native metric aggregation only"
+               {:native-metric-reference-count (count native-metric-refs)
+                :original-aggregation-count original-count
+                :expanded-aggregation-count (count expanded)}))
+      expanded)))
+
 (defn- breakout-count [query]
   (reduce + 0
           (for [stage-number (stage-numbers query)]
@@ -465,7 +515,8 @@
         checked-table-ids (->> (query-perms/query->source-table-ids preprocessed) sort vec)
         implicit          (implicit-joins preprocessed)
         implicit-ids      (->> implicit (keep implicit-joined-table-id) distinct sort vec)
-        aggs              (aggregation-facts query)
+        metric-refs       (native-metric-references query)
+        aggs              (attested-aggregation-facts query preprocessed metric-refs)
         observation-query (qp.desugar/desugar query)
         filters           (filter-facts observation-query)
         manifest-base     {:native_conversation_id        (str conversation_id)
