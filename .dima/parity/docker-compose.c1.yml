@@ -1,0 +1,83 @@
+services:
+  analytics-db:
+    image: postgres@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+    environment:
+      POSTGRES_DB: boyahane
+      POSTGRES_USER: boyahane_owner
+      POSTGRES_PASSWORD: ${P12X_WAREHOUSE_OWNER_PASSWORD:-boyahane-owner-lab}
+    ports: ["127.0.0.1:55442:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U boyahane_owner -d boyahane"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    networks: [c1]
+
+  stock-app-db:
+    image: postgres@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+    environment:
+      POSTGRES_DB: metabase_stock
+      POSTGRES_USER: metabase_app
+      POSTGRES_PASSWORD: ${P12X_MB_APP_PASSWORD:-metabase-app-lab}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase_app -d metabase_stock"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    networks: [c1]
+
+  fork-app-db:
+    image: postgres@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+    environment:
+      POSTGRES_DB: metabase_fork
+      POSTGRES_USER: metabase_app
+      POSTGRES_PASSWORD: ${P12X_MB_APP_PASSWORD:-metabase-app-lab}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase_app -d metabase_fork"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    networks: [c1]
+
+  stock:
+    image: metabase/metabase@sha256:1160b570cb11c107bce00e71293552df8a8363e01a32c2c7a048cee002dc8a73
+    depends_on:
+      stock-app-db: {condition: service_healthy}
+      analytics-db: {condition: service_healthy}
+    environment: &mb-env
+      MB_DB_TYPE: postgres
+      MB_AI_FEATURES_ENABLED: "true"
+      MB_METABOT_ENABLED: "true"
+      MB_AGENT_API_ENABLED: "true"
+      MB_LOAD_SAMPLE_CONTENT: "false"
+      MB_MCP_EXECUTE_SQL_ENABLED: "false"
+      MB_LLM_OPENROUTER_API_KEY: ${DIMA_OPENROUTER_API_KEY}
+      MB_LLM_METABOT_PROVIDER: ${P12X_METABOT_PROVIDER:-openrouter/openai/gpt-5.6-luna}
+    ports: ["127.0.0.1:3311:3000"]
+    networks: [c1]
+    environment:
+      <<: *mb-env
+      MB_DB_HOST: stock-app-db
+      MB_DB_PORT: "5432"
+      MB_DB_DBNAME: metabase_stock
+      MB_DB_USER: metabase_app
+      MB_DB_PASS: ${P12X_MB_APP_PASSWORD:-metabase-app-lab}
+
+  fork:
+    image: ghcr.io/upcytech/dima-metabase-engine@sha256:674d1ac4a929b95ab476bcdf37baa43099b398c444bc3f53fef404318892554b
+    depends_on:
+      fork-app-db: {condition: service_healthy}
+      analytics-db: {condition: service_healthy}
+    environment:
+      <<: *mb-env
+      MB_DB_HOST: fork-app-db
+      MB_DB_PORT: "5432"
+      MB_DB_DBNAME: metabase_fork
+      MB_DB_USER: metabase_app
+      MB_DB_PASS: ${P12X_MB_APP_PASSWORD:-metabase-app-lab}
+    ports: ["127.0.0.1:3312:3000"]
+    networks: [c1]
+
+networks:
+  c1:
+    name: dima-engine-c1
