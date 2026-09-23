@@ -160,19 +160,17 @@
               exact-before   (#'dima.attestation/exact-serialized-query query)
               fingerprint    (dima.attestation/exact-query-fingerprint query)
               preprocessed   (#'dima.attestation/preprocess-and-authorize! query)
-              facts          (#'dima.attestation/filter-facts preprocessed)
-              predicates     (:temporal_predicates facts)]
-          (is (= 2 (:material_filter_count facts)))
-          (is (= 0 (:non_temporal_filter_count facts)))
-          (is (= 2 (count predicates)))
+              filters        (lib/atomic-filters preprocessed -1)
+              parts          (mapv #(lib/filter-parts preprocessed -1 %) filters)
+              value-parts    (mapv #(lib/expression-parts preprocessed -1 (first (:args %))) parts)
+              by-op          (into {} (map vector (map :operator parts) value-parts))]
+          (is (= #{:>= :<} (set (map :operator parts))))
           (is (= #{(mt/id :orders :created_at)}
-                 (set (map :time_field_id predicates))))
-          (is (some #(and (= "2026-06-01" (:lower_bound %))
-                          (true? (:lower_inclusive %)))
-                    predicates))
-          (is (some #(and (= "2026-07-01" (:upper_bound %))
-                          (false? (:upper_inclusive %)))
-                    predicates))
+                 (set (map (comp :id :column) parts))))
+          (is (= :absolute-datetime (get-in by-op [:>= :operator])))
+          (is (= "2026-06-01" (str (first (get-in by-op [:>= :args])))))
+          (is (= :absolute-datetime (get-in by-op [:< :operator])))
+          (is (= "2026-07-01" (str (first (get-in by-op [:< :args])))))
           (is (= exact-before
                  (#'dima.attestation/exact-serialized-query query)))
           (is (= fingerprint
