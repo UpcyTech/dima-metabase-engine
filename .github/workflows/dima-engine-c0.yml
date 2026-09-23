@@ -24,13 +24,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: main
+          fetch-depth: 2
+          fetch-tags: false
 
       - name: Verify exact base ancestry and immutable base branch
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin refs/heads/upstream/base-v0.63.18:refs/remotes/origin/upstream/base-v0.63.18
+          git fetch --no-tags origin "$DIMA_UPSTREAM_BASE_SHA"
+          git fetch --no-tags origin refs/heads/upstream/base-v0.63.18:refs/remotes/origin/upstream/base-v0.63.18
           git merge-base --is-ancestor "$DIMA_UPSTREAM_BASE_SHA" HEAD
           test "$(git rev-parse refs/remotes/origin/upstream/base-v0.63.18^{commit})" = "$DIMA_UPSTREAM_BASE_SHA"
 
@@ -45,7 +48,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker build             --build-arg MB_EDITION=oss             --build-arg VERSION="$DIMA_ENGINE_VERSION"             -t "$DIMA_IMAGE:$DIMA_ENGINE_VERSION"             .
+          docker build \
+            -f .dima/docker/Dockerfile.c0 \
+            --build-arg MB_EDITION=oss \
+            --build-arg VERSION="$DIMA_ENGINE_VERSION" \
+            -t "$DIMA_IMAGE:$DIMA_ENGINE_VERSION" \
+            .
 
       - name: Smoke boot fork-built image
         shell: bash
