@@ -33,7 +33,11 @@ RUN apt-get update \
     && chmod +x linux-install-1.12.0.1488.sh \
     && ./linux-install-1.12.0.1488.sh \
     && rm linux-install-1.12.0.1488.sh \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh
+    && curl --retry 5 --retry-all-errors --connect-timeout 20 -fsSL \
+       -o /tmp/uv-install.sh https://astral.sh/uv/install.sh \
+    && sh /tmp/uv-install.sh \
+    && test -x /root/.local/bin/uv \
+    && rm /tmp/uv-install.sh
 
 ENV PATH="/root/.local/bin:$PATH"
 
