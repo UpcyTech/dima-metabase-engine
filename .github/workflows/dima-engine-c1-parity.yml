@@ -2,12 +2,26 @@ name: dima-engine-c1-parity
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/metabase/dima/**"
+      - "test/metabase/dima/**"
+      - "src/metabase/api_routes/routes.clj"
+      - ".dima/docker/Dockerfile.c0"
+      - ".dima/release.json"
+      - ".dima/parity/**"
+      - ".github/workflows/dima-engine-p13b.yml"
+      - ".github/workflows/dima-engine-c1-parity.yml"
 
 permissions:
   contents: read
   packages: read
 
 env:
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  CANDIDATE_RUNTIME_TAG: v0.63.18-dima.1-candidate
+  DIMA_FORK_IMAGE: dima-engine-c1-candidate:${{ github.event.pull_request.head.sha || github.sha }}
   PLATFORM_SHA: e35b68e4b7f60fc46c677317e7a001a1d66e88ac
   BOYAHANE_SHA: f0c4a6b053ead52ca2eac80002c448323dc34a35
   DIMA_OPENROUTER_API_KEY: ${{ secrets.DIMA_OPENROUTER_API_KEY || secrets.OPENROUTER_API_KEY }}
@@ -28,6 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.CANDIDATE_SHA }}
           path: engine
           fetch-depth: 1
 
@@ -60,12 +75,21 @@ jobs:
       - name: Install parity dependencies
         run: pip install "duckdb==1.4.3" "psycopg[binary]==3.3.3" "httpx>=0.27,<1"
 
-      - name: Login to GHCR for immutable fork image
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build exact fork candidate image
+        working-directory: engine
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          docker build \
+            -f .dima/docker/Dockerfile.c0 \
+            --build-arg MB_EDITION=oss \
+            --build-arg VERSION="$CANDIDATE_RUNTIME_TAG" \
+            --build-arg DIMA_ENGINE_REPOSITORY=UpcyTech/dima-metabase-engine \
+            --build-arg DIMA_ENGINE_REVISION_SHA="$CANDIDATE_SHA" \
+            --build-arg DIMA_ENGINE_UPSTREAM_BASE_SHA=2ba2485c78d7e00a9a25f82c00fc201da71590c4 \
+            --build-arg DIMA_ENGINE_RUNTIME_TAG="$CANDIDATE_RUNTIME_TAG" \
+            --build-arg DIMA_ENGINE_BUILD_IDENTITY="github-actions-c1:${GITHUB_RUN_ID}:${CANDIDATE_SHA}" \
+            -t "$DIMA_FORK_IMAGE" .
 
       - name: Start exact databases
         working-directory: engine
@@ -91,6 +115,20 @@ jobs:
       - name: Start stock and fork native runtimes
         working-directory: engine
         run: docker compose -f .dima/parity/docker-compose.c1.yml up -d stock fork
+
+      - name: Verify fork container uses exact candidate image
+        working-directory: engine
+        run: |
+          set -euo pipefail
+          expected_image_id="$(docker image inspect "$DIMA_FORK_IMAGE" --format '{{.Id}}')"
+          fork_container_id="$(docker compose -f .dima/parity/docker-compose.c1.yml ps -q fork)"
+          test -n "$fork_container_id"
+          actual_image_id="$(docker inspect "$fork_container_id" --format '{{.Image}}')"
+          test "$actual_image_id" = "$expected_image_id"
+          mkdir -p .dima/reports/c1
+          printf '%s\n' \
+            "{\"candidate_sha\":\"$CANDIDATE_SHA\",\"candidate_runtime_tag\":\"$CANDIDATE_RUNTIME_TAG\",\"fork_image\":\"$DIMA_FORK_IMAGE\",\"fork_image_id\":\"$actual_image_id\"}" \
+            > .dima/reports/c1/CANDIDATE_IDENTITY.json
 
       - name: Bootstrap stock with restricted principal
         working-directory: platform/backend
@@ -137,7 +175,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dima-engine-c1-${{ github.sha }}
+          name: dima-engine-c1-${{ env.CANDIDATE_SHA }}
           path: engine/.dima/reports/c1/
           if-no-files-found: warn
           retention-days: 30
