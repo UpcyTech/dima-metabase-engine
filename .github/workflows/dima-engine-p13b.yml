@@ -130,12 +130,12 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "### P13B-1 ENGINE CANDIDATE"
-            echo
-            echo "- candidate SHA: `$CANDIDATE_SHA`"
-            echo "- focused: `$FOCUSED_RESULT`"
-            echo "- patch-surface: `$PATCH_SURFACE_RESULT`"
-            echo "- source-build: `$SOURCE_BUILD_RESULT`"
+            printf '%s\n' '### P13B-1 ENGINE CANDIDATE'
+            printf '\n'
+            printf '%s\n' "- candidate SHA: $CANDIDATE_SHA"
+            printf '%s\n' "- focused: $FOCUSED_RESULT"
+            printf '%s\n' "- patch-surface: $PATCH_SURFACE_RESULT"
+            printf '%s\n' "- source-build: $SOURCE_BUILD_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
           test "$FOCUSED_RESULT" = "success"
           test "$PATCH_SURFACE_RESULT" = "success"
