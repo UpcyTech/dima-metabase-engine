@@ -241,15 +241,31 @@
     (fail! "SHARED_CONVERSATION_ATTESTATION_UNSUPPORTED" 409
            "P13B-v1 does not certify shared or Slack conversation attribution")))
 
+(defn- load-conversation-identity! [conversation-id]
+  (or (t2/select-one [:model/MetabotConversation
+                      :id
+                      :user_id
+                      :slack_team_id
+                      :slack_channel_id
+                      :slack_thread_ts]
+                     :id conversation-id)
+      (fail! "NATIVE_QUERY_OCCURRENCE_NOT_FOUND" 404
+             "Metabot conversation was not found")))
+
+(defn- load-conversation-state! [conversation-id]
+  (:state
+   (t2/select-one [:model/MetabotConversation :state]
+                  :id conversation-id)))
+
 (defn- load-occurrence! [conversation-id native-query-id]
-  (let [conversation (or (t2/select-one :model/MetabotConversation :id conversation-id)
-                         (fail! "NATIVE_QUERY_OCCURRENCE_NOT_FOUND" 404
-                                "Metabot conversation was not found"))
-        subject      (assert-certified-subject! conversation)
-        messages     (vec (t2/select :model/MetabotMessage :conversation_id conversation-id))
-        _            (assert-supported-conversation! conversation messages)
-        assistants   (filterv #(= :assistant (:role %)) messages)
-        matches      (vec (mapcat #(matching-query-outputs % native-query-id) assistants))]
+  (let [conversation-identity (load-conversation-identity! conversation-id)
+        subject               (assert-certified-subject! conversation-identity)
+        messages              (vec (t2/select :model/MetabotMessage :conversation_id conversation-id))
+        _                     (assert-supported-conversation! conversation-identity messages)
+        conversation          (assoc conversation-identity
+                                     :state (load-conversation-state! conversation-id))
+        assistants            (filterv #(= :assistant (:role %)) messages)
+        matches               (vec (mapcat #(matching-query-outputs % native-query-id) assistants))]
     (cond
       (empty? matches)
       (fail! "NATIVE_QUERY_OCCURRENCE_NOT_FOUND" 404

@@ -12,7 +12,8 @@
    [metabase.query-processor.middleware.add-implicit-joins :as qp.add-implicit-joins]
    [metabase.query-processor.middleware.permissions :as qp.perms]
    [metabase.test :as mt]
-   [metabase.test.fixtures :as fixtures]))
+   [metabase.test.fixtures :as fixtures]
+   [toucan2.core :as t2]))
 
 (use-fixtures :once (fixtures/initialize :db))
 
@@ -368,6 +369,29 @@
                     #(dima.attestation/attest-native-query!
                       {:conversation_id (java.util.UUID/fromString convo-id)
                        :native_query_id query-id}))))))))))
+
+(deftest subject-mismatch-blocks-before-message-content-load-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          other-id (mt/user->id :lucky)
+          convo-id (str (random-uuid))
+          query-id "pre-auth-q"]
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id
+                        :query-id query-id
+                        :query (count-star-query)
+                        :user-id owner-id}))
+      (binding [api/*current-user-id* other-id
+                dima.attestation/*runtime-identity-override* test-runtime]
+        (with-redefs [t2/select
+                      (fn [& _]
+                        (throw (ex-info "message content loaded before subject authorization"
+                                        {:dima/error-code "PRE_AUTH_MESSAGE_LOAD"})))]
+          (is (= "NATIVE_ATTESTATION_SUBJECT_MISMATCH"
+                 (exception-code
+                  #(dima.attestation/attest-native-query!
+                    {:conversation_id (java.util.UUID/fromString convo-id)
+                     :native_query_id query-id})))))))))
 
 (deftest material-query-count-observes-second-query-and-sql-producer-is-not-certifiable-test
   (mt/test-driver :h2
