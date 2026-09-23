@@ -43,11 +43,11 @@
   (let [mp (mt/metadata-provider)]
     (lib/aggregate
      (orders-query)
-     (lib/count (lib.metadata/field mp (mt/id :orders :created-at))))))
+     (lib/count (lib.metadata/field mp (mt/id :orders :created_at))))))
 
 (defn- june-count-query []
   (let [mp         (mt/metadata-provider)
-        created-at (lib.metadata/field mp (mt/id :orders :created-at))]
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))]
     (-> (count-star-query)
         (lib/filter (lib/>= created-at "2026-06-01"))
         (lib/filter (lib/< created-at "2026-07-01")))))
@@ -114,7 +114,7 @@
                star))
         (is (= "count" (:operator field)))
         (is (= "field" (:argument_kind field)))
-        (is (= [(mt/id :orders :created-at)] (:referenced_field_ids field)))
+        (is (= [(mt/id :orders :created_at)] (:referenced_field_ids field)))
         (is (false? (:distinct field)))))))
 
 (deftest temporal-facts-observe-literal-june-half-open-bounds-test
@@ -125,7 +125,7 @@
         (is (= 2 (:material_filter_count facts)))
         (is (= 0 (:non_temporal_filter_count facts)))
         (is (= 2 (count predicates)))
-        (is (= #{(mt/id :orders :created-at)}
+        (is (= #{(mt/id :orders :created_at)}
                (set (map :time_field_id predicates))))
         (is (some #(and (= "2026-06-01" (:lower_bound %))
                         (true? (:lower_inclusive %)))
@@ -138,7 +138,7 @@
   (mt/test-driver :h2
     (let [mp         (mt/metadata-provider)
           products   (lib.metadata/table mp (mt/id :products))
-          product-id (lib.metadata/field mp (mt/id :orders :product-id))
+          product-id (lib.metadata/field mp (mt/id :orders :product_id))
           products-id (lib.metadata/field mp (mt/id :products :id))
           query      (lib/join
                       (orders-query)
