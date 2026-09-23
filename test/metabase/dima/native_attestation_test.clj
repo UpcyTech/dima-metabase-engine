@@ -53,6 +53,13 @@
         (lib/filter (lib/>= created-at "2026-06-01"))
         (lib/filter (lib/< created-at "2026-07-01")))))
 
+(defn- june-during-query []
+  (let [mp         (mt/metadata-provider)
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))]
+    (lib/filter
+     (count-star-query)
+     (lib/during created-at "2026-06-01" :month))))
+
 (defn- tool-parts
   [{:keys [query-id query call-id producer]
     :or {call-id "tool-call-1" producer "construct_notebook_query"}}]
@@ -134,6 +141,41 @@
         (is (some #(and (= "2026-07-01" (:upper_bound %))
                         (false? (:upper_inclusive %)))
                   predicates))))))
+
+
+(deftest during-original-view-is-not-certified-as-literal-bounds-test
+  (testing "the live native :during shape reproduces the current P13B-v1 attestation gap"
+    (mt/test-driver :h2
+      (is (= "NATIVE_TEMPORAL_SHAPE_UNSUPPORTED"
+             (exception-code
+              (fn []
+                (#'dima.attestation/filter-facts (june-during-query)))))))))
+
+(deftest during-native-preprocess-resolves-exact-june-half-open-bounds-test
+  (testing "Metabase QP desugars :during to exact physical half-open bounds without mutating execution identity"
+    (mt/test-driver :h2
+      (mt/with-current-user (mt/user->id :rasta)
+        (let [query          (june-during-query)
+              exact-before   (#'dima.attestation/exact-serialized-query query)
+              fingerprint    (dima.attestation/exact-query-fingerprint query)
+              preprocessed   (#'dima.attestation/preprocess-and-authorize! query)
+              facts          (#'dima.attestation/filter-facts preprocessed)
+              predicates     (:temporal_predicates facts)]
+          (is (= 2 (:material_filter_count facts)))
+          (is (= 0 (:non_temporal_filter_count facts)))
+          (is (= 2 (count predicates)))
+          (is (= #{(mt/id :orders :created_at)}
+                 (set (map :time_field_id predicates))))
+          (is (some #(and (= "2026-06-01" (:lower_bound %))
+                          (true? (:lower_inclusive %)))
+                    predicates))
+          (is (some #(and (= "2026-07-01" (:upper_bound %))
+                          (false? (:upper_inclusive %)))
+                    predicates))
+          (is (= exact-before
+                 (#'dima.attestation/exact-serialized-query query)))
+          (is (= fingerprint
+                 (dima.attestation/exact-query-fingerprint query))))))))
 
 (deftest non-temporal-filter-is-observed-as-material-query-fact-test
   (mt/test-driver :h2
