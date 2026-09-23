@@ -63,7 +63,7 @@
    [:producer_tool [:= "construct_notebook_query"]]
    [:exact_pmbql_fingerprint [:re #"^[0-9a-f]{64}$"]]
    [:database_id ms/PositiveInt]
-   [:primary_source_table_id ms/PositiveInt]
+   [:primary_source_table_id [:maybe ms/PositiveInt]]
    [:referenced_source_table_ids [:sequential ms/PositiveInt]]
    [:aggregation_count ms/IntGreaterThanOrEqualToZero]
    [:aggregations [:sequential AggregationFact]]
