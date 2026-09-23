@@ -29,6 +29,7 @@ permissions:
 env:
   UPSTREAM_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
   CANDIDATE_RUNTIME_TAG: v0.63.18-dima.1-candidate
+  CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   focused:
@@ -37,6 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 64
 
       - name: Prepare backend
@@ -60,6 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 64
 
       - name: Generate P13B patch surface
@@ -79,7 +82,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dima-engine-p13b-patch-surface-${{ github.sha }}
+          name: dima-engine-p13b-patch-surface-${{ env.CANDIDATE_SHA }}
           path: .dima/reports/p13b/
           if-no-files-found: error
           retention-days: 30
@@ -90,17 +93,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 1
 
       - name: Build exact P13B candidate from source
         run: |
           set -euo pipefail
-          docker build             -f .dima/docker/Dockerfile.c0             --build-arg MB_EDITION=oss             --build-arg VERSION="$CANDIDATE_RUNTIME_TAG"             --build-arg DIMA_ENGINE_REPOSITORY=UpcyTech/dima-metabase-engine             --build-arg DIMA_ENGINE_REVISION_SHA="$GITHUB_SHA"             --build-arg DIMA_ENGINE_UPSTREAM_BASE_SHA="$UPSTREAM_SHA"             --build-arg DIMA_ENGINE_RUNTIME_TAG="$CANDIDATE_RUNTIME_TAG"             --build-arg DIMA_ENGINE_BUILD_IDENTITY="github-actions:${GITHUB_RUN_ID}:${GITHUB_SHA}"             -t dima-engine-p13b:"$GITHUB_SHA" .
+          docker build             -f .dima/docker/Dockerfile.c0             --build-arg MB_EDITION=oss             --build-arg VERSION="$CANDIDATE_RUNTIME_TAG"             --build-arg DIMA_ENGINE_REPOSITORY=UpcyTech/dima-metabase-engine             --build-arg DIMA_ENGINE_REVISION_SHA="$CANDIDATE_SHA"             --build-arg DIMA_ENGINE_UPSTREAM_BASE_SHA="$UPSTREAM_SHA"             --build-arg DIMA_ENGINE_RUNTIME_TAG="$CANDIDATE_RUNTIME_TAG"             --build-arg DIMA_ENGINE_BUILD_IDENTITY="github-actions:${GITHUB_RUN_ID}:${CANDIDATE_SHA}"             -t dima-engine-p13b:"$CANDIDATE_SHA" .
 
       - name: Smoke exact candidate image
         run: |
           set -euo pipefail
-          docker run -d --rm             --name dima-p13b-smoke             -p 127.0.0.1:3313:3000             -e DIMA_ENGINE_IMAGE_IDENTITY="local-image:${GITHUB_SHA}"             dima-engine-p13b:"$GITHUB_SHA"
+          docker run -d --rm             --name dima-p13b-smoke             -p 127.0.0.1:3313:3000             -e DIMA_ENGINE_IMAGE_IDENTITY="local-image:${CANDIDATE_SHA}"             dima-engine-p13b:"$CANDIDATE_SHA"
           trap 'docker logs dima-p13b-smoke || true; docker stop dima-p13b-smoke || true' EXIT
           for i in $(seq 1 120); do
             if curl -fsS http://127.0.0.1:3313/api/health | grep -q '"status":"ok"'; then
