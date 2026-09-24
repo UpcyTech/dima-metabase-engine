@@ -1,0 +1,32 @@
+name: dima-p13d-clean-native-temporal-repro
+
+on:
+  push:
+    branches:
+      - dev/p13d-native-temporal-repro
+    paths:
+      - "test/metabase/dima/native_temporal_repro_test.clj"
+      - ".github/workflows/dima-p13d-clean-native-temporal-repro.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 64
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Prove clean native API boundary defect
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-temporal-repro-test]'
