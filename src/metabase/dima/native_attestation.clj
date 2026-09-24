@@ -135,14 +135,17 @@
     (format "%064x" (BigInteger. 1 digest))))
 
 (defn- restore-persisted-query [query]
-  ;; Metabot conversation/message state is stored as JSON. Re-enter through Metabase Lib's
-  ;; query constructor with the application-DB metadata provider so Lib owns normalization,
-  ;; field typing, and metadata attachment. This is intentionally not a Dima query parser.
-  (let [database-id (or (:database query) (get query "database"))]
+  ;; Metabot conversation/message state is persisted across a JSON boundary. Re-enter through
+  ;; Metabase Lib's native deserialization contract before constructing the query so temporal
+  ;; literals and other API/app-DB wire values are hydrated exactly as native Metabase expects.
+  ;; This remains an observational Dima seam: the serialized persisted artifact is still the
+  ;; authority and is never rewritten by Dima.
+  (let [hydrated-query (lib.serialize/prepare-after-deserialization query)
+        database-id    (or (:database hydrated-query) (get hydrated-query "database"))]
     (when-not (pos-int? database-id)
       (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
              "Persisted native query has no positive database id"))
-    (lib/query (lib-be/application-database-metadata-provider database-id) query)))
+    (lib/query (lib-be/application-database-metadata-provider database-id) hydrated-query)))
 
 (defn exact-serialized-query
   "Metabase REST/app-DB serialization boundary for one exact internal pMBQL query."

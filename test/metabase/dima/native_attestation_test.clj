@@ -87,6 +87,23 @@
         query    (products-count-by-category-query)]
     (lib/order-by query category :asc)))
 
+(defn- orders-top2-products-june-between-query []
+  (let [mp         (mt/metadata-provider)
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
+        product-id (lib.metadata/field mp (mt/id :orders :product_id))
+        lower      (lib/absolute-datetime
+                    (java.time.LocalDateTime/parse "2026-06-01T00:00:00")
+                    :day)
+        upper      (lib/absolute-datetime
+                    (java.time.LocalDateTime/parse "2026-06-30T23:59:59")
+                    :day)
+        query      (-> (count-star-query)
+                       (lib/filter (lib/between created-at lower upper))
+                       (lib/breakout product-id))]
+    (-> query
+        (lib/order-by (lib/aggregation-ref query 0) :desc)
+        (lib/limit 2))))
+
 (defn- june-count-query []
   (let [mp         (mt/metadata-provider)
         created-at (lib.metadata/field mp (mt/id :orders :created_at))]
@@ -249,6 +266,48 @@
                (#'dima.attestation/exact-serialized-query query)))
         (is (= fingerprint
                (dima.attestation/exact-query-fingerprint query)))))))
+
+(deftest persisted-between-absolute-datetime-ranking-restores-through-native-deserialization-test
+  (testing "persisted between + absolute-datetime ranking shape hydrates through native Lib without changing serialized authority"
+    (mt/test-driver :h2
+      (let [owner-id         (mt/user->id :rasta)
+            convo-id         (str (random-uuid))
+            query-id         "p13d-persisted-between-ranking"
+            native-query     (orders-top2-products-june-between-query)
+            persisted-query  (#'dima.attestation/exact-serialized-query native-query)
+            absolute-clauses (->> (tree-seq coll? seq persisted-query)
+                                  (filter #(and (vector? %)
+                                                (contains? #{:absolute-datetime "absolute-datetime"}
+                                                           (first %))))
+                                  vec)]
+        ;; The regression must cross the same persistence boundary as the live failure:
+        ;; temporal literals are strings in persisted JSON, not java.time values.
+        (is (= 2 (count absolute-clauses)))
+        (is (every? string? (map #(nth % 2) absolute-clauses)))
+        (mt/with-current-user owner-id
+          (persist-turn! {:conversation-id convo-id
+                          :query-id query-id
+                          :query persisted-query
+                          :user-id owner-id})
+          (binding [dima.attestation/*runtime-identity-override* test-runtime]
+            (let [restored  (#'dima.attestation/restore-persisted-query persisted-query)
+                  roundtrip (#'dima.attestation/exact-serialized-query restored)
+                  processed (#'dima.attestation/preprocess-and-authorize! restored)
+                  attested  (dima.attestation/attest-native-query!
+                             {:conversation_id (java.util.UUID/fromString convo-id)
+                              :native_query_id query-id})
+                  manifest  (:manifest attested)]
+              ;; Hydration is internal representation restoration only. The authoritative
+              ;; serialized pMBQL and its execution/receipt identity remain unchanged.
+              (is (= persisted-query roundtrip))
+              (is (map? processed))
+              (is (= persisted-query (:exact_serialized_pmbql attested)))
+              (is (= 1 (:breakout_count manifest)))
+              (is (= 1 (:order_by_count manifest)))
+              (is (= 2 (:limit manifest)))
+              (is (= 1 (:material_filter_count manifest)))
+              (is (= 0 (:non_temporal_filter_count manifest)))
+              (is (= 1 (count (:temporal_predicates manifest)))))))))))
 
 (deftest non-temporal-filter-is-observed-as-material-query-fact-test
   (mt/test-driver :h2
