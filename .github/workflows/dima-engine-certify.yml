@@ -22,7 +22,7 @@ permissions:
 
 env:
   UPSTREAM_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
-  RUNTIME_TAG: v0.63.18-dima.4
+  RUNTIME_TAG: v0.63.18-dima.5
   IMAGE_REPOSITORY: ghcr.io/upcytech/dima-metabase-engine
   CANDIDATE_SHA: ${{ github.sha }}
   CACHE_SCOPE: dima-engine-c0-v06318
@@ -277,7 +277,7 @@ jobs:
               "schema_version": "dima_engine_certified_image_v1",
               "engine_repository": "UpcyTech/dima-metabase-engine",
               "engine_revision_sha": os.environ["CANDIDATE_SHA"],
-              "engine_release": "0.63.18-dima.4",
+              "engine_release": "0.63.18-dima.5",
               "upstream_base_sha": os.environ["UPSTREAM_SHA"],
               "source_certification_run_id": os.environ["GITHUB_RUN_ID"],
               "build_identity": os.environ["BUILD_IDENTITY"],
