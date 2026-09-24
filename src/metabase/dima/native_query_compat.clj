@@ -7,6 +7,8 @@
   (:require
    [clojure.walk :as walk]
    [metabase.lib-be.core :as lib-be]
+   [metabase.lib.normalize :as lib.normalize]
+   [metabase.lib.schema :as lib.schema]
    [metabase.lib.serialize :as lib.serialize]
    [metabase.util.json :as json]
    [metabase.util.time :as u.time])
@@ -83,10 +85,14 @@
       (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
              "Persisted native query has no positive database id"
              nil))
-    (let [;; A is JSON/app-DB wire form. Restore Metabase's own internal MBQL5 key/tag
-          ;; representation first; pinned native deserialization intentionally does not hydrate
-          ;; absolute-datetime literals, which is the single compatibility gap handled below.
-          internal      (lib.serialize/prepare-after-deserialization exact)
+    (let [;; A is JSON/app-DB wire form. Native Lib normalization restores MBQL5
+          ;; keys/tags/options without invoking lib/query's metadata/type enrichment. Then
+          ;; native post-deserialization stripping runs exactly as for persisted/API queries.
+          internal      (->> exact
+                             (lib.normalize/normalize ::lib.schema/query {:throw? true})
+                             lib.serialize/prepare-after-deserialization)
+          ;; Pinned 0.63.18 intentionally leaves the absolute-datetime literal as a string.
+          ;; This one certified representation slot is the only Dima-owned compatibility step.
           hydrated      (hydrate-exact-serialized-query! internal)
           ;; Attach only QP-internal metadata. prepare-for-serialization removes it, so this
           ;; cannot become part of canonical artifact identity.
