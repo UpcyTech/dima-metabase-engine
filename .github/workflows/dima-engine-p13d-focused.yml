@@ -1,0 +1,37 @@
+name: dima-engine-p13d-focused
+
+on:
+  push:
+    branches: [feat/p13d-native-standard-expansion]
+    paths:
+      - "src/metabase/dima/**"
+      - "test/metabase/dima/**"
+      - ".github/workflows/dima-engine-p13d-focused.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 64
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run bounded P13D Dima engine tests
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-attestation-test metabase.dima.api-test]'
+
+      - name: Require Dima namespaces
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.dima.native-attestation 'metabase.dima.api)"

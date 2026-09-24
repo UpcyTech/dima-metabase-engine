@@ -63,6 +63,27 @@
         category (lib.metadata/field mp (mt/id :products :category))]
     (lib/filter (products-count-query) (lib/= category value))))
 
+(defn- product-category-breakout-query []
+  (let [mp       (mt/metadata-provider)
+        category (lib.metadata/field mp (mt/id :products :category))]
+    (lib/breakout (products-count-query) category)))
+
+(defn- product-category-top-query []
+  (let [query (product-category-breakout-query)]
+    (-> query
+        (lib/order-by (lib/aggregation-ref query 0) :desc)
+        (lib/limit 3))))
+
+(defn- may-june-monthly-query []
+  (let [mp         (mt/metadata-provider)
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
+        month      (lib/with-temporal-bucket created-at :month)
+        query      (-> (count-star-query)
+                       (lib/filter (lib/>= created-at "2026-05-01"))
+                       (lib/filter (lib/< created-at "2026-07-01"))
+                       (lib/breakout month))]
+    (lib/order-by query month :asc)))
+
 (defn- june-count-query []
   (let [mp         (mt/metadata-provider)
         created-at (lib.metadata/field mp (mt/id :orders :created_at))]
@@ -263,6 +284,45 @@
       (is (= "Gizmo" (:literal_value upper)))
       (is (= "gizmo" (:literal_value lower)))
       (is (not= (:literal_value upper) (:literal_value lower))))))
+
+(deftest p13d-breakout-fact-observes-native-field-identity-test
+  (mt/test-driver :h2
+    (let [query (product-category-breakout-query)
+          facts (#'dima.attestation/breakout-facts query)
+          fact  (first facts)]
+      (is (= 1 (count facts)))
+      (is (= 0 (:stage_number fact)))
+      (is (= (mt/id :products :category) (:field_id fact)))
+      (is (nil? (:temporal_unit fact))))))
+
+(deftest p13d-ranking-fact-observes-direction-aggregation-and-limit-test
+  (mt/test-driver :h2
+    (let [query (product-category-top-query)
+          facts (#'dima.attestation/order-by-facts query)
+          fact  (first facts)]
+      (is (= 1 (count facts)))
+      (is (= 0 (:stage_number fact)))
+      (is (= "desc" (:direction fact)))
+      (is (= "aggregation" (:target_kind fact)))
+      (is (= 0 (:aggregation_index fact)))
+      (is (nil? (:field_id fact)))
+      (is (= 3 (lib/current-limit query))))))
+
+(deftest p13d-period-comparison-shape-observes-month-breakout-and-field-order-test
+  (mt/test-driver :h2
+    (let [query       (may-june-monthly-query)
+          breakout    (first (#'dima.attestation/breakout-facts query))
+          order-by    (first (#'dima.attestation/order-by-facts query))
+          observation (qp.desugar/desugar query)
+          temporal    (:temporal_predicates (#'dima.attestation/filter-facts observation))]
+      (is (= (mt/id :orders :created_at) (:field_id breakout)))
+      (is (= "month" (:temporal_unit breakout)))
+      (is (= "asc" (:direction order-by)))
+      (is (= "field" (:target_kind order-by)))
+      (is (= (mt/id :orders :created_at) (:field_id order-by)))
+      (is (= 2 (count temporal)))
+      (is (some #(= "2026-05-01" (:lower_bound %)) temporal))
+      (is (some #(= "2026-07-01" (:upper_bound %)) temporal)))))
 
 (deftest explicit-join-count-is-observed-from-lib-test
   (mt/test-driver :h2

@@ -49,6 +49,20 @@
    [:literal_value :string]
    [:field_type ms/NonBlankString]])
 
+(def ^:private BreakoutFact
+  [:map
+   [:stage_number ms/IntGreaterThanOrEqualToZero]
+   [:field_id ms/PositiveInt]
+   [:temporal_unit [:maybe :string]]])
+
+(def ^:private OrderByFact
+  [:map
+   [:stage_number ms/IntGreaterThanOrEqualToZero]
+   [:direction [:enum "asc" "desc"]]
+   [:target_kind [:enum "aggregation" "field"]]
+   [:aggregation_index [:maybe ms/IntGreaterThanOrEqualToZero]]
+   [:field_id [:maybe ms/PositiveInt]]])
+
 (def ^:private ValidationProvenance
   [:map
    [:producer_structured_output [:= "PASSED"]]
@@ -77,6 +91,7 @@
    [:aggregation_count ms/IntGreaterThanOrEqualToZero]
    [:aggregations [:sequential AggregationFact]]
    [:breakout_count ms/IntGreaterThanOrEqualToZero]
+   [:breakouts [:sequential BreakoutFact]]
    [:material_filter_count ms/IntGreaterThanOrEqualToZero]
    [:non_temporal_filter_count ms/IntGreaterThanOrEqualToZero]
    [:temporal_predicates [:sequential TemporalPredicate]]
@@ -85,6 +100,7 @@
    [:implicit_join_count ms/IntGreaterThanOrEqualToZero]
    [:implicit_joined_table_ids [:sequential ms/PositiveInt]]
    [:order_by_count ms/IntGreaterThanOrEqualToZero]
+   [:order_bys [:sequential OrderByFact]]
    [:limit [:maybe ms/IntGreaterThanOrEqualToZero]]
    [:stage_count ms/IntGreaterThanOrEqualToZero]
    [:material_query_count ms/IntGreaterThanOrEqualToZero]

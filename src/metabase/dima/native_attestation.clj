@@ -388,15 +388,86 @@
                 :expanded-aggregation-count (count expanded)}))
       expanded)))
 
+(defn- breakout-fact [query stage-number breakout]
+  (let [field-ids (referenced-field-ids query stage-number breakout)]
+    (when-not (= 1 (count field-ids))
+      (fail! "NATIVE_BREAKOUT_ATTESTATION_UNSUPPORTED" 422
+             "P13D breakout attestation requires exactly one native field reference"
+             {:stage-number stage-number
+              :referenced-field-ids field-ids}))
+    {:stage_number  stage-number
+     :field_id      (first field-ids)
+     :temporal_unit (type-name (:temporal-unit (second breakout)))}))
+
+(defn- breakout-facts [query]
+  (vec
+   (mapcat
+    (fn [stage-number]
+      (map #(breakout-fact query stage-number %)
+           (or (lib/breakouts query stage-number) [])))
+    (stage-numbers query))))
+
+(defn- aggregation-ref-index [query stage-number target]
+  (when (= :aggregation (first target))
+    (let [identity (nth target 2 nil)
+          aggs     (vec (or (lib/aggregations query stage-number) []))]
+      (cond
+        (and (nat-int? identity) (< identity (count aggs)))
+        identity
+
+        (string? identity)
+        (first
+         (keep-indexed
+          (fn [index aggregation]
+            (when (= identity (get-in aggregation [1 :lib/uuid]))
+              index))
+          aggs))
+
+        :else nil))))
+
+(defn- order-by-fact [query stage-number order-by]
+  (let [direction         (type-name (first order-by))
+        target            (nth order-by 2 nil)
+        aggregation-index (when (vector? target)
+                            (aggregation-ref-index query stage-number target))
+        field-ids         (when (and (vector? target)
+                                    (nil? aggregation-index))
+                            (referenced-field-ids query stage-number target))]
+    (cond
+      (some? aggregation-index)
+      {:stage_number      stage-number
+       :direction         direction
+       :target_kind       "aggregation"
+       :aggregation_index aggregation-index
+       :field_id          nil}
+
+      (= 1 (count field-ids))
+      {:stage_number      stage-number
+       :direction         direction
+       :target_kind       "field"
+       :aggregation_index nil
+       :field_id          (first field-ids)}
+
+      :else
+      (fail! "NATIVE_ORDER_BY_ATTESTATION_UNSUPPORTED" 422
+             "P13D order-by attestation requires one aggregation reference or one native field reference"
+             {:stage-number stage-number
+              :direction direction
+              :referenced-field-ids (vec field-ids)}))))
+
+(defn- order-by-facts [query]
+  (vec
+   (mapcat
+    (fn [stage-number]
+      (map #(order-by-fact query stage-number %)
+           (or (lib/order-bys query stage-number) [])))
+    (stage-numbers query))))
+
 (defn- breakout-count [query]
-  (reduce + 0
-          (for [stage-number (stage-numbers query)]
-            (count (or (lib/breakouts query stage-number) [])))))
+  (count (breakout-facts query)))
 
 (defn- order-by-count [query]
-  (reduce + 0
-          (for [stage-number (stage-numbers query)]
-            (count (or (lib/order-bys query stage-number) [])))))
+  (count (order-by-facts query)))
 
 (defn- explicit-join-count [query]
   (reduce + 0
@@ -558,6 +629,7 @@
                            :aggregations                   aggs
                            :native_metric_references       metric-refs
                            :breakout_count                (breakout-count query)
+                           :breakouts                     (breakout-facts query)
                            :material_filter_count         (:material_filter_count filters)
                            :non_temporal_filter_count     (:non_temporal_filter_count filters)
                            :temporal_predicates           (:temporal_predicates filters)
@@ -566,6 +638,7 @@
                            :implicit_join_count           (count implicit)
                            :implicit_joined_table_ids     implicit-ids
                            :order_by_count                (order-by-count query)
+                           :order_bys                     (order-by-facts query)
                            :limit                         (lib/current-limit query)
                            :stage_count                   (lib/stage-count query)
                            :material_query_count          material-query-count
