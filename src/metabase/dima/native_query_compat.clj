@@ -79,7 +79,14 @@
 (defn restore-exact-query!
   "Restore A to executable native runtime representation H(A) and prove reversibility."
   [serialized-query]
-  (let [exact       (exact-serialized-query serialized-query)
+  ;; The caller supplies A itself: the exact persisted JSON/app-DB artifact. Do not
+  ;; run A back through the internal-query serializer here; doing so would treat wire
+  ;; representation as a different type of object and can change canonical identity.
+  (when-not (map? serialized-query)
+    (fail! "NATIVE_QUERY_COMPAT_INVALID_ARTIFACT" 409
+           "Exact serialized pMBQL must be a map"
+           nil))
+  (let [exact       serialized-query
         database-id (or (:database exact) (get exact "database"))]
     (when-not (pos-int? database-id)
       (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
