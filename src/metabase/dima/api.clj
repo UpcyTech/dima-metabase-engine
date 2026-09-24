@@ -54,7 +54,8 @@
    [:stage_number ms/IntGreaterThanOrEqualToZero]
    [:breakout_index ms/IntGreaterThanOrEqualToZero]
    [:field_id ms/PositiveInt]
-   [:field_type ms/NonBlankString]])
+   [:field_type ms/NonBlankString]
+   [:temporal_unit [:maybe :string]]])
 
 (def ^:private OrderByFact
   [:map

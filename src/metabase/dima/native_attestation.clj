@@ -389,9 +389,10 @@
       expanded)))
 
 (defn- breakout-fact [query stage-number breakout-index breakout]
-  (let [column     (lib/breakout-column query stage-number breakout)
-        field-id   (:id column)
-        field-type (or (:effective-type column) (:base-type column))]
+  (let [column        (lib/breakout-column query stage-number breakout)
+        field-id      (:id column)
+        field-type    (or (:effective-type column) (:base-type column))
+        temporal-unit (lib/raw-temporal-bucket column)]
     (when-not (and (pos-int? field-id) field-type)
       (fail! "NATIVE_BREAKOUT_SHAPE_UNSUPPORTED" 422
              "P13D-v1 certifies physical-field breakouts only"
@@ -400,7 +401,8 @@
     {:stage_number   stage-number
      :breakout_index breakout-index
      :field_id       field-id
-     :field_type     (type-name field-type)}))
+     :field_type     (type-name field-type)
+     :temporal_unit  (some-> temporal-unit type-name)}))
 
 (defn- breakout-facts [query]
   (vec

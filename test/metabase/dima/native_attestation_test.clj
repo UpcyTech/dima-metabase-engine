@@ -68,6 +68,13 @@
         category (lib.metadata/field mp (mt/id :products :category))]
     (lib/breakout (products-count-query) category)))
 
+(defn- orders-count-by-created-month-query []
+  (let [mp         (mt/metadata-provider)
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))]
+    (lib/breakout
+     (orders-count-query)
+     (lib/with-temporal-bucket created-at :month))))
+
 (defn- products-top3-category-query []
   (let [query (products-count-by-category-query)]
     (-> query
@@ -290,7 +297,17 @@
       (is (= 0 (:stage_number fact)))
       (is (= 0 (:breakout_index fact)))
       (is (= (mt/id :products :category) (:field_id fact)))
-      (is (string? (:field_type fact))))))
+      (is (string? (:field_type fact)))
+      (is (nil? (:temporal_unit fact))))))
+
+(deftest temporal-breakout-fact-preserves-native-grain-test
+  (mt/test-driver :h2
+    (let [facts (vec (#'dima.attestation/breakout-facts
+                      (orders-count-by-created-month-query)))
+          fact  (first facts)]
+      (is (= 1 (count facts)))
+      (is (= (mt/id :orders :created_at) (:field_id fact)))
+      (is (= "month" (:temporal_unit fact))))))
 
 (deftest order-by-facts-observe-ranking-target-direction-and-limit-test
   (mt/test-driver :h2
