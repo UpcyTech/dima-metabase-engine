@@ -44,6 +44,6 @@
         (is (= 2 (count abs-clauses)))
         (is (every? string? (map #(nth % 2) abs-clauses)))
         (is (thrown-with-msg?
-             IllegalArgumentException
-             #"No implementation of method: :truncate-to.*java.lang.String"
+             clojure.lang.ExceptionInfo
+             #"Invalid input:.*java.time.temporal.Temporal.*2026-06-01T00:00"
              (qp.preprocess/preprocess native-in)))))))
