@@ -188,21 +188,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker network create dima-engine-certify
-          docker run -d --rm \
-            --name dima-engine-certify-pg \
-            --network dima-engine-certify \
-            --network-alias analytics-db \
-            -e POSTGRES_PASSWORD=dima-certify-password \
-            postgres@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
-          for i in $(seq 1 60); do
-            docker exec dima-engine-certify-pg pg_isready >/dev/null 2>&1 && break
-            sleep 1
-            test "$i" -lt 60
-          done
           docker run -d --rm \
             --name dima-engine-digest-verify \
-            --network dima-engine-certify \
             -p 127.0.0.1:3314:3000 \
             -e DIMA_ENGINE_REPOSITORY=UpcyTech/dima-metabase-engine \
             -e DIMA_ENGINE_REVISION_SHA="$CANDIDATE_SHA" \
@@ -211,7 +198,7 @@ jobs:
             -e DIMA_ENGINE_BUILD_IDENTITY="$BUILD_IDENTITY" \
             -e DIMA_ENGINE_IMAGE_IDENTITY="$REGISTRY_DIGEST" \
             "$IMMUTABLE_IMAGE_REF"
-          trap 'docker logs dima-engine-digest-verify || true; docker rm -f dima-engine-digest-verify dima-engine-certify-pg 2>/dev/null || true; docker network rm dima-engine-certify 2>/dev/null || true' EXIT
+          trap 'docker logs dima-engine-digest-verify || true; docker rm -f dima-engine-digest-verify 2>/dev/null || true' EXIT
 
           for i in $(seq 1 120); do
             if curl -fsS http://127.0.0.1:3314/api/health | grep -q '"status":"ok"'; then
@@ -248,6 +235,9 @@ jobs:
           setup_token = props.get("setup-token")
           if not setup_token:
               raise RuntimeError("fresh digest runtime has no setup-token")
+          # v0.63.18 setup API requires token + user + prefs. Database creation is
+          # intentionally absent: certified-image identity verification needs only one
+          # authenticated subject, not an analytical database or a second infrastructure fixture.
           setup = request("POST", "/api/setup", {
               "token": setup_token,
               "user": {
@@ -256,16 +246,8 @@ jobs:
                   "last_name": "Certify",
                   "password": password,
               },
-              "database": {
-                  "name": "Dima Certification DB",
-                  "engine": "postgres",
-                  "details": {
-                      "host": "analytics-db",
-                      "port": 5432,
-                      "dbname": "postgres",
-                      "user": "postgres",
-                      "password": "dima-certify-password",
-                  },
+              "prefs": {
+                  "site_name": "Dima Engine Certification",
               },
           })
           session = str((setup or {}).get("id") or "")
