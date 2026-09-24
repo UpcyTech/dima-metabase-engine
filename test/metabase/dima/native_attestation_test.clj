@@ -267,6 +267,15 @@
         (is (= fingerprint
                (dima.attestation/exact-query-fingerprint query)))))))
 
+(deftest clean-native-dataset-persisted-between-absolute-datetime-probe-test
+  (testing "the clean native /api/dataset boundary can execute the exact serialized temporal ranking artifact"
+    (mt/test-driver :h2
+      (let [persisted-query (#'dima.attestation/exact-serialized-query
+                             (orders-top2-products-june-between-query))
+            result          (mt/user-http-request :crowberto :post 202 "dataset" persisted-query)]
+        (is (= "completed" (:status result)))
+        (is (= 2 (:row_count result)))))))
+
 (deftest persisted-between-absolute-datetime-ranking-restores-through-native-deserialization-test
   (testing "persisted between + absolute-datetime ranking shape hydrates through native Lib without changing serialized authority"
     (mt/test-driver :h2
