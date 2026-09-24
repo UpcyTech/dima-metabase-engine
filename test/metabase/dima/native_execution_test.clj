@@ -1,12 +1,17 @@
 (ns metabase.dima.native-execution-test
   (:require
+   [clojure.data :as data]
    [clojure.test :refer :all]
    [clojure.walk :as walk]
    [metabase.api.common :as api]
    [metabase.dima.native-attestation :as dima.attestation]
    [metabase.dima.native-execution :as dima.execution]
    [metabase.dima.native-query-compat :as dima.compat]
+   [metabase.lib-be.core :as lib-be]
    [metabase.lib.core :as lib]
+   [metabase.lib.normalize :as lib.normalize]
+   [metabase.lib.schema :as lib.schema]
+   [metabase.lib.serialize :as lib.serialize]
    [metabase.lib.metadata :as lib.metadata]
    [metabase.metabot.persistence :as metabot.persistence]
    [metabase.query-processor :as qp]
@@ -98,12 +103,25 @@
 
 (deftest compatibility-hydration-is-narrow-and-reversible-test
   (mt/test-driver :h2
-    (let [query    (persisted-absolute-ranking-query)
-          exact    (dima.compat/exact-serialized-query query)
-          hydrated (dima.compat/restore-exact-query! exact)]
-      (is (= exact (dima.compat/exact-serialized-query hydrated)))
-      (is (= (dima.attestation/exact-query-fingerprint query)
-             (dima.attestation/exact-query-fingerprint hydrated))))))
+    (let [query      (persisted-absolute-ranking-query)
+          exact      (dima.compat/exact-serialized-query query)
+          database-id (get exact "database")
+          internal   (-> (lib.normalize/normalize
+                          ::lib.schema/query
+                          exact
+                          {:throw? true})
+                         lib.serialize/prepare-after-deserialization)
+          hydrated*  (dima.compat/hydrate-exact-serialized-query! internal)
+          runtime*   (assoc hydrated*
+                            :lib/metadata
+                            (lib-be/application-database-metadata-provider database-id))
+          roundtrip* (dima.compat/exact-serialized-query runtime*)]
+      (is (= exact roundtrip*)
+          (pr-str (data/diff exact roundtrip*)))
+      (let [hydrated (dima.compat/restore-exact-query! exact)]
+        (is (= exact (dima.compat/exact-serialized-query hydrated)))
+        (is (= (dima.attestation/exact-query-fingerprint query)
+               (dima.attestation/exact-query-fingerprint hydrated)))))))
 
 (deftest unsupported-absolute-datetime-representation-fails-closed-test
   (mt/test-driver :h2
