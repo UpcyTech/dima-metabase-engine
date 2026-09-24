@@ -487,6 +487,10 @@
     (instance? LocalDateTime value) (str value)
     (instance? OffsetDateTime value) (str value)
     (instance? ZonedDateTime value) (str value)
+    (and (vector? value)
+         (= 4 (count value))
+         (= :absolute-datetime (first value)))
+    (literal-temporal-value (nth value 2))
     :else nil))
 
 (defn- textual-column? [column]
