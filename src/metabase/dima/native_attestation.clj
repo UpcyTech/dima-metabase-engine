@@ -388,15 +388,77 @@
                 :expanded-aggregation-count (count expanded)}))
       expanded)))
 
-(defn- breakout-count [query]
-  (reduce + 0
-          (for [stage-number (stage-numbers query)]
-            (count (or (lib/breakouts query stage-number) [])))))
+(defn- breakout-fact [query stage-number breakout-index breakout]
+  (let [column     (lib/breakout-column query stage-number breakout)
+        field-id   (:id column)
+        field-type (or (:effective-type column) (:base-type column))]
+    (when-not (and (pos-int? field-id) field-type)
+      (fail! "NATIVE_BREAKOUT_SHAPE_UNSUPPORTED" 422
+             "P13D-v1 certifies physical-field breakouts only"
+             {:stage-number stage-number
+              :breakout-index breakout-index}))
+    {:stage_number   stage-number
+     :breakout_index breakout-index
+     :field_id       field-id
+     :field_type     (type-name field-type)}))
 
-(defn- order-by-count [query]
-  (reduce + 0
-          (for [stage-number (stage-numbers query)]
-            (count (or (lib/order-bys query stage-number) [])))))
+(defn- breakout-facts [query]
+  (vec
+   (mapcat
+    (fn [stage-number]
+      (keep-indexed
+       (fn [breakout-index breakout]
+         (breakout-fact query stage-number breakout-index breakout))
+       (or (lib/breakouts query stage-number) [])))
+    (stage-numbers query))))
+
+(defn- aggregation-order-target-index [query stage-number target]
+  (when (= :aggregation (first target))
+    (let [target-uuid (nth target 2 nil)]
+      (first
+       (keep-indexed
+        (fn [aggregation-index aggregation]
+          (when (= target-uuid (get-in aggregation [1 :lib/uuid]))
+            aggregation-index))
+        (or (lib/aggregations query stage-number) []))))))
+
+(defn- field-order-target-fact [query stage-number target]
+  (when (= :field (first target))
+    (let [columns (vec (lib/referenced-columns query stage-number target))]
+      (when (= 1 (count columns))
+        (let [column     (first columns)
+              field-id   (:id column)
+              field-type (or (:effective-type column) (:base-type column))]
+          (when (and (pos-int? field-id) field-type)
+            {:target_kind "field"
+             :field_id field-id
+             :field_type (type-name field-type)}))))))
+
+(defn- order-by-target-fact [query stage-number target]
+  (if-let [aggregation-index
+           (aggregation-order-target-index query stage-number target)]
+    {:target_kind "aggregation"
+     :aggregation_index aggregation-index}
+    (or (field-order-target-fact query stage-number target)
+        {:target_kind "other"})))
+
+(defn- order-by-fact [query stage-number order-index order-by]
+  (let [[direction _opts target] order-by]
+    (merge
+     {:stage_number stage-number
+      :order_index  order-index
+      :direction    (type-name direction)}
+     (order-by-target-fact query stage-number target))))
+
+(defn- order-by-facts [query]
+  (vec
+   (mapcat
+    (fn [stage-number]
+      (keep-indexed
+       (fn [order-index order-by]
+         (order-by-fact query stage-number order-index order-by))
+       (or (lib/order-bys query stage-number) [])))
+    (stage-numbers query))))
 
 (defn- explicit-join-count [query]
   (reduce + 0
@@ -543,6 +605,8 @@
         implicit-ids      (->> implicit (keep implicit-joined-table-id) distinct sort vec)
         metric-refs       (native-metric-references query)
         aggs              (attested-aggregation-facts query preprocessed metric-refs)
+        breakouts         (breakout-facts query)
+        ordering-facts    (order-by-facts query)
         observation-query (qp.desugar/desugar query)
         filters           (filter-facts observation-query)
         manifest-base     {:native_conversation_id        (str conversation_id)
@@ -557,7 +621,8 @@
                            :aggregation_count             (count aggs)
                            :aggregations                   aggs
                            :native_metric_references       metric-refs
-                           :breakout_count                (breakout-count query)
+                           :breakout_count                (count breakouts)
+                           :breakouts                     breakouts
                            :material_filter_count         (:material_filter_count filters)
                            :non_temporal_filter_count     (:non_temporal_filter_count filters)
                            :temporal_predicates           (:temporal_predicates filters)
@@ -565,7 +630,8 @@
                            :explicit_join_count           (explicit-join-count query)
                            :implicit_join_count           (count implicit)
                            :implicit_joined_table_ids     implicit-ids
-                           :order_by_count                (order-by-count query)
+                           :order_by_count                (count ordering-facts)
+                           :order_bys                     ordering-facts
                            :limit                         (lib/current-limit query)
                            :stage_count                   (lib/stage-count query)
                            :material_query_count          material-query-count

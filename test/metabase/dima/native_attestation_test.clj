@@ -63,6 +63,23 @@
         category (lib.metadata/field mp (mt/id :products :category))]
     (lib/filter (products-count-query) (lib/= category value))))
 
+(defn- products-count-by-category-query []
+  (let [mp       (mt/metadata-provider)
+        category (lib.metadata/field mp (mt/id :products :category))]
+    (lib/breakout (products-count-query) category)))
+
+(defn- products-top3-category-query []
+  (let [query (products-count-by-category-query)]
+    (-> query
+        (lib/order-by (lib/aggregation-ref query 0) :desc)
+        (lib/limit 3))))
+
+(defn- products-category-alpha-query []
+  (let [mp       (mt/metadata-provider)
+        category (lib.metadata/field mp (mt/id :products :category))
+        query    (products-count-by-category-query)]
+    (lib/order-by query category :asc)))
+
 (defn- june-count-query []
   (let [mp         (mt/metadata-provider)
         created-at (lib.metadata/field mp (mt/id :orders :created_at))]
@@ -263,6 +280,41 @@
       (is (= "Gizmo" (:literal_value upper)))
       (is (= "gizmo" (:literal_value lower)))
       (is (not= (:literal_value upper) (:literal_value lower))))))
+
+(deftest breakout-facts-observe-exact-physical-field-test
+  (mt/test-driver :h2
+    (let [facts (vec (#'dima.attestation/breakout-facts
+                      (products-count-by-category-query)))
+          fact  (first facts)]
+      (is (= 1 (count facts)))
+      (is (= 0 (:stage_number fact)))
+      (is (= 0 (:breakout_index fact)))
+      (is (= (mt/id :products :category) (:field_id fact)))
+      (is (string? (:field_type fact))))))
+
+(deftest order-by-facts-observe-ranking-target-direction-and-limit-test
+  (mt/test-driver :h2
+    (let [query (products-top3-category-query)
+          facts (vec (#'dima.attestation/order-by-facts query))
+          fact  (first facts)]
+      (is (= 1 (count facts)))
+      (is (= 0 (:stage_number fact)))
+      (is (= 0 (:order_index fact)))
+      (is (= "desc" (:direction fact)))
+      (is (= "aggregation" (:target_kind fact)))
+      (is (= 0 (:aggregation_index fact)))
+      (is (= 3 (lib/current-limit query))))))
+
+(deftest order-by-facts-distinguish-field-target-from-metric-target-test
+  (mt/test-driver :h2
+    (let [facts (vec (#'dima.attestation/order-by-facts
+                      (products-category-alpha-query)))
+          fact  (first facts)]
+      (is (= 1 (count facts)))
+      (is (= "asc" (:direction fact)))
+      (is (= "field" (:target_kind fact)))
+      (is (= (mt/id :products :category) (:field_id fact)))
+      (is (string? (:field_type fact))))))
 
 (deftest explicit-join-count-is-observed-from-lib-test
   (mt/test-driver :h2
