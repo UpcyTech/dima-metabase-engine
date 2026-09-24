@@ -7,7 +7,6 @@
   (:require
    [clojure.walk :as walk]
    [metabase.lib-be.core :as lib-be]
-   [metabase.lib.core :as lib]
    [metabase.lib.serialize :as lib.serialize]
    [metabase.util.json :as json]
    [metabase.util.time :as u.time])
@@ -85,9 +84,13 @@
              "Persisted native query has no positive database id"
              nil))
     (let [hydrated-wire (hydrate-exact-serialized-query! exact)
-          query         (lib/query
-                         (lib-be/application-database-metadata-provider database-id)
-                         hydrated-wire)
+          ;; The serialized artifact is already native MBQL5 produced by Metabot. Reconstructing
+          ;; it through lib/query would normalize/fill fields and can alter canonical A. QP setup
+          ;; natively accepts a metadata-providerable MBQL5 query, so attach only the internal
+          ;; provider that prepare-for-serialization is defined to remove.
+          query         (assoc hydrated-wire
+                               :lib/metadata
+                               (lib-be/application-database-metadata-provider database-id))
           roundtrip     (exact-serialized-query query)]
       (when-not (= exact roundtrip)
         (fail! "NATIVE_QUERY_COMPAT_NON_REVERSIBLE" 409
