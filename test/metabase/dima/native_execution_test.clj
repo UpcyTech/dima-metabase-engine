@@ -13,7 +13,7 @@
    [metabase.test.fixtures :as fixtures]
    [toucan2.core :as t2])
   (:import
-   (java.time LocalDateTime OffsetDateTime)
+   (java.time LocalDate LocalDateTime OffsetDateTime)
    (java.time.temporal Temporal)))
 
 (use-fixtures :once (fixtures/initialize :db))
@@ -58,6 +58,20 @@
     (-> query
         (lib/order-by (lib/aggregation-ref query 0) :desc)
         (lib/limit 2))))
+
+(defn- date-only-temporal-query []
+  (let [mp         (mt/metadata-provider)
+        table      (lib.metadata/table mp (mt/id :orders))
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
+        lower      (lib/absolute-datetime
+                    (LocalDate/parse "2010-01-01")
+                    :day)
+        upper      (lib/absolute-datetime
+                    (LocalDate/parse "2030-01-01")
+                    :day)]
+    (-> (lib/query mp table)
+        (lib/aggregate (lib/count))
+        (lib/filter (lib/between created-at lower upper)))))
 
 (defn- offset-temporal-query []
   (let [mp         (mt/metadata-provider)
@@ -128,6 +142,36 @@
       (is (= authority (dima.attestation/exact-serialized-query restored)))
       (is (= 2 (count temporal-values)))
       (is (every? #(instance? Temporal %) temporal-values)))))
+
+(deftest date-only-absolute-datetime-compatibility-is-lossless-and-executable-test
+  (mt/test-driver :h2
+    (let [owner-id  (mt/user->id :rasta)
+          convo-id  (str (random-uuid))
+          query-id  "p13d-date-only-temporal"
+          authority (dima.attestation/exact-serialized-query
+                     (date-only-temporal-query))
+          restored  (dima.compat/restore-exact-runtime-query! authority)
+          temporal-values
+          (->> (tree-seq coll? seq restored)
+               (filter #(and (vector? %)
+                             (= :absolute-datetime (first %))))
+               (map #(nth % 2))
+               vec)]
+      (is (= authority (dima.attestation/exact-serialized-query restored)))
+      (is (= 2 (count temporal-values)))
+      (is (every? #(instance? LocalDate %) temporal-values))
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id
+                        :query-id query-id
+                        :query authority
+                        :user-id owner-id})
+        (let [attestation (attest! convo-id query-id)
+              execution   (execute! convo-id query-id attestation)]
+          (is (= :completed (get-in execution [:result :status])))
+          (is (= (get-in attestation [:manifest :exact_pmbql_fingerprint])
+                 (:executed_pmbql_fingerprint execution)))
+          (is (= (get-in attestation [:manifest :attestation_id])
+                 (:attestation_id execution))))))))
 
 (deftest persisted-temporal-ranking-attests-and-executes-the-same-occurrence-test
   (mt/test-driver :h2
