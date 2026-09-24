@@ -72,7 +72,7 @@
   (let [mp         (mt/metadata-provider)
         created-at (lib.metadata/field mp (mt/id :orders :created_at))]
     (lib/breakout
-     (orders-count-query)
+     (count-star-query)
      (lib/with-temporal-bucket created-at :month))))
 
 (defn- products-top3-category-query []
