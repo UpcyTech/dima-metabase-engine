@@ -51,10 +51,9 @@
         (let [hydrated (try
                          (t/local-date-time value)
                          (catch Exception _ nil))]
-          (when-not (and (instance? java.time.LocalDateTime hydrated)
-                         (= value (str hydrated)))
+          (when-not (instance? java.time.LocalDateTime hydrated)
             (fail! "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED" 422
-                   "Dima compatibility codec supports only exactly reversible local ISO datetime strings in :absolute-datetime literal slots"
+                   "Dima compatibility codec supports only local ISO datetime strings in :absolute-datetime literal slots"
                    {:clause-tag "absolute-datetime"}))
           (assoc clause 2 hydrated))
 

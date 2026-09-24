@@ -235,7 +235,7 @@
 
 (deftest unsupported-temporal-representation-fails-closed-test
   (mt/test-driver :h2
-    (is (= "NATIVE_QUERY_RUNTIME_ROUNDTRIP_MISMATCH"
+    (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
            (exception-code
             #(dima.compat/restore-exact-runtime-query!
               (dima.attestation/exact-serialized-query
