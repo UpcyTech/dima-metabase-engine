@@ -6,10 +6,9 @@
   (:require
    [clojure.string :as str]
    [metabase.api.common :as api]
-   [metabase.lib-be.core :as lib-be]
+   [metabase.dima.native-query-compat :as dima.compat]
    [metabase.lib.core :as lib]
    [metabase.lib.metadata :as lib.metadata]
-   [metabase.lib.serialize :as lib.serialize]
    [metabase.metabot.tools :as metabot.tools]
    [metabase.query-permissions.impl :as query-perms]
    [metabase.query-processor :as qp]
@@ -135,21 +134,15 @@
     (format "%064x" (BigInteger. 1 digest))))
 
 (defn- restore-persisted-query [query]
-  ;; Metabot conversation/message state is stored as JSON. Re-enter through Metabase Lib's
-  ;; query constructor with the application-DB metadata provider so Lib owns normalization,
-  ;; field typing, and metadata attachment. This is intentionally not a Dima query parser.
-  (let [database-id (or (:database query) (get query "database"))]
-    (when-not (pos-int? database-id)
-      (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
-             "Persisted native query has no positive database id"))
-    (lib/query (lib-be/application-database-metadata-provider database-id) query)))
+  ;; Persisted Metabot pMBQL is canonical serialized authority. Dima's compatibility
+  ;; boundary restores only the runtime representation required by native QP and
+  ;; proves reversibility before the hydrated query can be observed or executed.
+  (dima.compat/restore-exact-query! query))
 
 (defn exact-serialized-query
   "Metabase REST/app-DB serialization boundary for one exact internal pMBQL query."
   [query]
-  (-> query
-      lib.serialize/prepare-for-serialization
-      json-wire-value))
+  (dima.compat/exact-serialized-query query))
 
 (defn exact-query-fingerprint
   "SHA-256 over deterministic canonical JSON of the exact serialized pMBQL."
