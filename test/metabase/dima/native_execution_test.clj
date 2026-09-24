@@ -137,7 +137,8 @@
       (mt/with-current-user owner-id
         (persist-turn! {:conversation-id convo-id
                         :query-id query-id
-                        :query (temporal-ranking-query)
+                        :query (dima.attestation/exact-serialized-query
+                                (temporal-ranking-query))
                         :user-id owner-id})
         (let [attestation (attest! convo-id query-id)
               execution   (execute! convo-id query-id attestation)]
