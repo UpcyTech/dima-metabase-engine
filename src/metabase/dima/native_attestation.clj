@@ -7,6 +7,7 @@
    [clojure.string :as str]
    [metabase.api.common :as api]
    [metabase.lib-be.core :as lib-be]
+   [metabase.lib-be.models.transforms :as lib-be.transforms]
    [metabase.lib.core :as lib]
    [metabase.lib.metadata :as lib.metadata]
    [metabase.lib.serialize :as lib.serialize]
@@ -136,16 +137,18 @@
 
 (defn- restore-persisted-query [query]
   ;; Metabot conversation/message state is persisted across a JSON boundary. Re-enter through
-  ;; Metabase Lib's native deserialization contract before constructing the query so temporal
-  ;; literals and other API/app-DB wire values are hydrated exactly as native Metabase expects.
-  ;; This remains an observational Dima seam: the serialized persisted artifact is still the
-  ;; authority and is never rewritten by Dima.
-  (let [hydrated-query (lib.serialize/prepare-after-deserialization query)
-        database-id    (or (:database hydrated-query) (get hydrated-query "database"))]
+  ;; the same backend boundary used by native API/app-DB query ingestion: normalize the wire
+  ;; query with the native metadata provider, then run Lib's post-deserialization preparation.
+  ;; Dima does not parse or repair MBQL here; the serialized persisted artifact remains authority.
+  (let [database-id (or (:database query) (get query "database"))]
     (when-not (pos-int? database-id)
       (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
              "Persisted native query has no positive database id"))
-    (lib/query (lib-be/application-database-metadata-provider database-id) hydrated-query)))
+    (-> (lib-be.transforms/normalize-query
+         (lib-be/application-database-metadata-provider database-id)
+         query
+         {:strict? true})
+        lib.serialize/prepare-after-deserialization)))
 
 (defn exact-serialized-query
   "Metabase REST/app-DB serialization boundary for one exact internal pMBQL query."
