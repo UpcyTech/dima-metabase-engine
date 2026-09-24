@@ -1,0 +1,44 @@
+name: dima-engine-p13d-exact-occurrence-focused
+
+on:
+  push:
+    branches:
+      - dev/p13d-exact-occurrence-clean
+    paths:
+      - "src/metabase/dima/**"
+      - "test/metabase/dima/**"
+      - ".github/workflows/dima-engine-p13d-exact-occurrence-focused.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 64
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run bounded Dima exact-occurrence tests
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-attestation-test
+                   metabase.dima.api-test
+                   metabase.dima.native-execution-test
+                   metabase.dima.execution-api-contract-test]'
+
+      - name: Require Dima namespaces
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.dima.native-attestation
+                       'metabase.dima.native-query-compat
+                       'metabase.dima.native-execution
+                       'metabase.dima.api)"

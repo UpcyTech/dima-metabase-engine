@@ -7,6 +7,7 @@
    [metabase.api.common :as api]
    [metabase.api.macros :as api.macros]
    [metabase.dima.native-attestation :as dima.attestation]
+   [metabase.dima.native-execution :as dima.execution]
    [metabase.util.malli.schema :as ms])
   (:import
    (java.util UUID)))
@@ -118,6 +119,17 @@
    [:exact_serialized_pmbql :map]
    [:manifest NativeExecutionManifest]])
 
+(def ^:private NativeQueryExecutionResponse
+  [:map
+   [:native_conversation_id ms/UUIDString]
+   [:native_query_id ms/NonBlankString]
+   [:attestation_id ms/NonBlankString]
+   [:executed_pmbql_fingerprint [:re #"^[0-9a-f]{64}$"]]
+   [:runtime_identity RuntimeIdentityResponse]
+   [:result :map]
+   [:attestation NativeQueryAttestationResponse]])
+
+
 (defn- check-no-dropped-entries!
   "Fail closed when endpoint decoding dropped an undeclared or invalid map entry.
 
@@ -149,6 +161,29 @@
     (dima.attestation/attest-native-query!
      {:conversation_id (UUID/fromString conversation_id)
       :native_query_id native_query_id})))
+
+
+(api.macros/defendpoint :post "/engine/v1/native-query-execution" :- NativeQueryExecutionResponse
+  "Execute the same server-side native query occurrence already authorized by Dima.
+
+  The request carries only occurrence/identity locators; arbitrary pMBQL bodies are forbidden."
+  [_route-params
+   _query-params
+   body
+   :- [:map {:closed true}
+       [:conversation_id ms/UUIDString]
+       [:native_query_id ms/NonBlankString]
+       [:expected_pmbql_fingerprint [:re #"^[0-9a-f]{64}$"]]
+       [:expected_attestation_id ms/NonBlankString]]
+   request]
+  (check-no-dropped-entries! (:body request) body)
+  (let [{:keys [conversation_id native_query_id
+                expected_pmbql_fingerprint expected_attestation_id]} body]
+    (dima.execution/execute-native-query!
+     {:conversation_id (UUID/fromString conversation_id)
+      :native_query_id native_query_id
+      :expected_pmbql_fingerprint expected_pmbql_fingerprint
+      :expected_attestation_id expected_attestation_id})))
 
 (def keep-me
   "Require target for the root API router."

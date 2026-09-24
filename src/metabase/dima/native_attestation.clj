@@ -9,7 +9,7 @@
    [metabase.lib-be.core :as lib-be]
    [metabase.lib.core :as lib]
    [metabase.lib.metadata :as lib.metadata]
-   [metabase.lib.serialize :as lib.serialize]
+   [metabase.dima.native-query-compat :as dima.compat]
    [metabase.metabot.tools :as metabot.tools]
    [metabase.query-permissions.impl :as query-perms]
    [metabase.query-processor :as qp]
@@ -147,9 +147,7 @@
 (defn exact-serialized-query
   "Metabase REST/app-DB serialization boundary for one exact internal pMBQL query."
   [query]
-  (-> query
-      lib.serialize/prepare-for-serialization
-      json-wire-value))
+  (dima.compat/exact-serialized-query query))
 
 (defn exact-query-fingerprint
   "SHA-256 over deterministic canonical JSON of the exact serialized pMBQL."
@@ -600,16 +598,17 @@
         (load-occurrence! (str conversation_id) native_query_id)
         exact-query       (exact-serialized-query query)
         fingerprint       (exact-query-fingerprint query)
+        runtime-query     (dima.compat/hydrate-runtime-query! query)
         runtime           (runtime-identity)
-        preprocessed      (preprocess-and-authorize! query)
+        preprocessed      (preprocess-and-authorize! runtime-query)
         checked-table-ids (->> (query-perms/query->source-table-ids preprocessed) sort vec)
         implicit          (implicit-joins preprocessed)
         implicit-ids      (->> implicit (keep implicit-joined-table-id) distinct sort vec)
-        metric-refs       (native-metric-references query)
-        aggs              (attested-aggregation-facts query preprocessed metric-refs)
-        breakouts         (breakout-facts query)
-        ordering-facts    (order-by-facts query)
-        observation-query (qp.desugar/desugar query)
+        metric-refs       (native-metric-references runtime-query)
+        aggs              (attested-aggregation-facts runtime-query preprocessed metric-refs)
+        breakouts         (breakout-facts runtime-query)
+        ordering-facts    (order-by-facts runtime-query)
+        observation-query (qp.desugar/desugar runtime-query)
         filters           (filter-facts observation-query)
         manifest-base     {:native_conversation_id        (str conversation_id)
                            :native_assistant_message_id   (:id message)
@@ -617,8 +616,8 @@
                            :native_query_id               native_query_id
                            :producer_tool                 producer-tool
                            :exact_pmbql_fingerprint       fingerprint
-                           :database_id                   (lib/database-id query)
-                           :primary_source_table_id       (lib/primary-source-table-id query)
+                           :database_id                   (lib/database-id runtime-query)
+                           :primary_source_table_id       (lib/primary-source-table-id runtime-query)
                            :referenced_source_table_ids   checked-table-ids
                            :aggregation_count             (count aggs)
                            :aggregations                   aggs
@@ -629,13 +628,13 @@
                            :non_temporal_filter_count     (:non_temporal_filter_count filters)
                            :temporal_predicates           (:temporal_predicates filters)
                            :textual_equality_predicates   (:textual_equality_predicates filters)
-                           :explicit_join_count           (explicit-join-count query)
+                           :explicit_join_count           (explicit-join-count runtime-query)
                            :implicit_join_count           (count implicit)
                            :implicit_joined_table_ids     implicit-ids
                            :order_by_count                (count ordering-facts)
                            :order_bys                     ordering-facts
-                           :limit                         (lib/current-limit query)
-                           :stage_count                   (lib/stage-count query)
+                           :limit                         (lib/current-limit runtime-query)
+                           :stage_count                   (lib/stage-count runtime-query)
                            :material_query_count          material-query-count
                            :authenticated_metabase_subject authenticated-subject
                            :validation_provenance         {:producer_structured_output "PASSED"
