@@ -6,11 +6,11 @@
   back to the exact serialized authority."
   (:require
    [clojure.walk :as walk]
+   [java-time.api :as t]
    [metabase.lib-be.core :as lib-be]
    [metabase.lib.core :as lib]
    [metabase.lib.serialize :as lib.serialize]
-   [metabase.util.json :as json]
-   [metabase.util.time :as u.time])
+   [metabase.util.json :as json])
   (:import
    (java.time.temporal Temporal)))
 
@@ -49,11 +49,12 @@
 
         (string? value)
         (let [hydrated (try
-                         (u.time/coerce-to-timestamp value {:local true})
+                         (t/local-date-time value)
                          (catch Exception _ nil))]
-          (when-not (instance? java.time.LocalDateTime hydrated)
+          (when-not (and (instance? java.time.LocalDateTime hydrated)
+                         (= value (str hydrated)))
             (fail! "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED" 422
-                   "Dima compatibility codec supports only local ISO datetime strings in :absolute-datetime literal slots"
+                   "Dima compatibility codec supports only exactly reversible local ISO datetime strings in :absolute-datetime literal slots"
                    {:clause-tag "absolute-datetime"}))
           (assoc clause 2 hydrated))
 

@@ -59,10 +59,9 @@
                          :expected_attestation_id
                          (get-in attestation [:manifest :attestation_id])
                          :query (:exact_serialized_pmbql attestation)}]
-            (is (= 400
-                   (:status
-                    (mt/user-http-request :rasta
-                                          :post
-                                          nil
-                                          "dima/engine/v1/native-query-execution"
-                                          payload))))))))))
+            (is (some?
+                 (mt/user-http-request :rasta
+                                       :post
+                                       400
+                                       "dima/engine/v1/native-query-execution"
+                                       payload)))))))))
