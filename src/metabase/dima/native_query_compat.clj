@@ -83,12 +83,14 @@
       (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
              "Persisted native query has no positive database id"
              nil))
-    (let [hydrated-wire (hydrate-exact-serialized-query! exact)
-          ;; The serialized artifact is already native MBQL5 produced by Metabot. Reconstructing
-          ;; it through lib/query would normalize/fill fields and can alter canonical A. QP setup
-          ;; natively accepts a metadata-providerable MBQL5 query, so attach only the internal
-          ;; provider that prepare-for-serialization is defined to remove.
-          query         (assoc hydrated-wire
+    (let [;; A is JSON/app-DB wire form. Restore Metabase's own internal MBQL5 key/tag
+          ;; representation first; pinned native deserialization intentionally does not hydrate
+          ;; absolute-datetime literals, which is the single compatibility gap handled below.
+          internal      (lib.serialize/prepare-after-deserialization exact)
+          hydrated      (hydrate-exact-serialized-query! internal)
+          ;; Attach only QP-internal metadata. prepare-for-serialization removes it, so this
+          ;; cannot become part of canonical artifact identity.
+          query         (assoc hydrated
                                :lib/metadata
                                (lib-be/application-database-metadata-provider database-id))
           roundtrip     (exact-serialized-query query)]
