@@ -88,9 +88,11 @@
     (let [;; A is JSON/app-DB wire form. Native Lib normalization restores MBQL5
           ;; keys/tags/options without invoking lib/query's metadata/type enrichment. Then
           ;; native post-deserialization stripping runs exactly as for persisted/API queries.
-          internal      (->> exact
-                             (lib.normalize/normalize ::lib.schema/query {:throw? true})
-                             lib.serialize/prepare-after-deserialization)
+          internal      (-> (lib.normalize/normalize
+                              ::lib.schema/query
+                              exact
+                              {:throw? true})
+                            lib.serialize/prepare-after-deserialization)
           ;; Pinned 0.63.18 intentionally leaves the absolute-datetime literal as a string.
           ;; This one certified representation slot is the only Dima-owned compatibility step.
           hydrated      (hydrate-exact-serialized-query! internal)
