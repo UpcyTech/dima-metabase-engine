@@ -3,6 +3,7 @@
    [clojure.test :refer :all]
    [metabase.api.common :as api]
    [metabase.dima.native-attestation :as dima.attestation]
+   [metabase.dima.native-query-compat :as dima.compat]
    [metabase.lib.core :as lib]
    [metabase.lib.filter :as lib.filter]
    [metabase.lib.metadata :as lib.metadata]
@@ -249,6 +250,55 @@
                (#'dima.attestation/exact-serialized-query query)))
         (is (= fingerprint
                (dima.attestation/exact-query-fingerprint query)))))))
+
+
+(deftest absolute-date-runtime-compatibility-owner-reproduction-test
+  (testing "legal absolute Date pMBQL is narrower than the current Dima runtime compatibility codec"
+    (let [mp       meta/metadata-provider
+          date-col (lib.metadata/field mp (meta/id :checkins :date))
+          absolute [:absolute-datetime
+                    {:lib/uuid "00000000-0000-4000-8000-000000000071"
+                     :base-type :type/Date}
+                    "2026-06-01"
+                    :day]
+          query    (lib/filter
+                    (lib/query mp (lib.metadata/table mp (meta/id :checkins)))
+                    (lib/>= date-col absolute))
+          exact    (#'dima.attestation/exact-serialized-query query)]
+      ;; The pinned Metabase schema accepts this as native pMBQL and its wire artifact
+      ;; preserves the Date literal exactly.
+      (is (= "2026-06-01" (get-in exact [:stages 0 :filters 0 3 2])))
+      (is (= :day (get-in exact [:stages 0 :filters 0 3 3])))
+      ;; Current dima.6 incorrectly requires every string in an absolute-datetime
+      ;; literal slot to parse as LocalDateTime.
+      (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
+             (exception-code #(dima.compat/hydrate-runtime-query! query)))))))
+
+(deftest mixed-native-metric-aggregation-capability-owner-reproduction-test
+  (testing "one governed native metric can coexist with other legal aggregations beyond the dima.6 attestation bound"
+    (let [{:keys [query]} (metric-probe-query (fn [_] (lib/count)))
+          mp              (mt/metadata-provider)
+          quantity        (lib.metadata/field mp (mt/id :orders :quantity))
+          mixed           (-> query
+                              (lib/aggregate (lib/count))
+                              (lib/aggregate (lib/sum quantity)))
+          exact-before    (#'dima.attestation/exact-serialized-query mixed)
+          fingerprint     (dima.attestation/exact-query-fingerprint mixed)
+          refs            (#'dima.attestation/native-metric-references mixed)
+          observed        (metric-observation-view mixed)
+          original-facts  (#'dima.attestation/aggregation-facts mixed)
+          expanded-facts  (#'dima.attestation/aggregation-facts observed)]
+      (is (= 1 (count refs)))
+      (is (= 3 (count original-facts)))
+      (is (= 3 (count expanded-facts)))
+      (is (= exact-before (#'dima.attestation/exact-serialized-query mixed)))
+      (is (= fingerprint (dima.attestation/exact-query-fingerprint mixed)))
+      ;; Metabase produced a legal, stable query; the RED is the explicit bounded
+      ;; attestation capability rather than Product-side metric algebra.
+      (is (= "NATIVE_METRIC_EXPANSION_UNSUPPORTED"
+             (exception-code
+              #(#'dima.attestation/attested-aggregation-facts
+                mixed observed refs)))))))
 
 (deftest non-temporal-filter-is-observed-as-material-query-fact-test
   (mt/test-driver :h2
