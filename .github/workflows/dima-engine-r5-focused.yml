@@ -34,9 +34,18 @@ jobs:
       - name: Run R5 Dima engine tests
         run: >-
           clojure -X:dev:ci:test:oss:oss-dev
-          :only '[metabase.dima.native-attestation-test metabase.dima.native-material-observation-test metabase.dima.api-test]'
+          :only '[metabase.dima.native-attestation-test
+                   metabase.dima.native-material-observation-test
+                   metabase.dima.api-test
+                   metabase.dima.native-execution-test
+                   metabase.dima.execution-api-contract-test]'
 
       - name: Require R5 namespaces
         run: >-
           clojure -M:dev:oss:oss-dev
-          -e "(require 'metabase.dima.native-occurrence 'metabase.dima.native-attestation 'metabase.dima.native-material-observation 'metabase.dima.api)"
+          -e "(require 'metabase.dima.native-occurrence
+                       'metabase.dima.native-attestation
+                       'metabase.dima.native-query-compat
+                       'metabase.dima.native-material-observation
+                       'metabase.dima.native-execution
+                       'metabase.dima.api)"
