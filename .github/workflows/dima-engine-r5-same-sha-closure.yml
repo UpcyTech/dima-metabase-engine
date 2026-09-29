@@ -1,0 +1,93 @@
+name: dima-engine-r5-same-sha-closure
+
+on:
+  push:
+    branches: [ci/r5-same-sha-closure-94b70119]
+    paths:
+      - ".github/workflows/dima-engine-r5-same-sha-closure.yml"
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: 94b701194c9f396ff28aa53d3466e69a8a662521
+  UPSTREAM_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 64
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+      - name: Run same-SHA Dima regression closure
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-attestation-test
+                   metabase.dima.native-material-observation-test
+                   metabase.dima.api-test
+                   metabase.dima.native-execution-test
+                   metabase.dima.execution-api-contract-test]'
+      - name: Require bounded Dima namespaces
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.dima.native-occurrence
+                       'metabase.dima.native-attestation
+                       'metabase.dima.native-material-observation
+                       'metabase.dima.native-execution
+                       'metabase.dima.api)"
+
+  patch-surface:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 64
+      - name: Prove frozen candidate patch surface
+        run: |
+          set -euo pipefail
+          git cat-file -e "$UPSTREAM_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$UPSTREAM_SHA"
+          mkdir -p .dima/reports/r5-closure
+          python .dima/tools/patch_surface.py \
+            --base "$UPSTREAM_SHA" \
+            --head "$CANDIDATE_SHA" \
+            --json-out .dima/reports/r5-closure/DIMA_PATCH_SURFACE.json \
+            --md-out .dima/reports/r5-closure/DIMA_PATCH_SURFACE.md
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=json.loads(Path(".dima/reports/r5-closure/DIMA_PATCH_SURFACE.json").read_text())
+          assert p["modified_preexisting_upstream_file_count"] == 1, p
+          assert p["modified_preexisting_upstream_files"] == ["src/metabase/api_routes/routes.clj"], p
+          assert p["deleted_upstream_file_count"] == 0, p
+          assert p["sync_conflict_count"] == 0, p
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r5-same-sha-patch-surface-${{ env.CANDIDATE_SHA }}
+          path: .dima/reports/r5-closure/
+          if-no-files-found: error
+          retention-days: 30
+
+  closure:
+    if: ${{ always() }}
+    needs: [regression, patch-surface]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Seal same-SHA closure gate
+        env:
+          REGRESSION: ${{ needs.regression.result }}
+          PATCH_SURFACE: ${{ needs.patch-surface.result }}
+        run: |
+          set -euo pipefail
+          test "$REGRESSION" = "success"
+          test "$PATCH_SURFACE" = "success"
+          echo "R5_SAME_SHA_CLOSURE_GREEN candidate=$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
