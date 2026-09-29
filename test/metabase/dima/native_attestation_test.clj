@@ -1,6 +1,7 @@
 (ns metabase.dima.native-attestation-test
   (:require
    [clojure.test :refer :all]
+   [clojure.walk :as walk]
    [metabase.api.common :as api]
    [metabase.dima.native-attestation :as dima.attestation]
    [metabase.dima.native-query-compat :as dima.compat]
@@ -264,11 +265,20 @@
           query    (lib/filter
                     (lib/query mp (lib.metadata/table mp (meta/id :checkins)))
                     (lib/>= date-col absolute))
-          exact    (#'dima.attestation/exact-serialized-query query)]
+          exact    (#'dima.attestation/exact-serialized-query query)
+          absolute-wire
+          (some
+           (fn [node]
+             (when (and (vector? node)
+                        (contains? #{"absolute-datetime" :absolute-datetime}
+                                   (first node)))
+               node))
+           (tree-seq coll? seq exact))]
       ;; The pinned Metabase schema accepts this as native pMBQL and its wire artifact
-      ;; preserves the Date literal exactly.
-      (is (= "2026-06-01" (get-in exact [:stages 0 :filters 0 3 2])))
-      (is (= :day (get-in exact [:stages 0 :filters 0 3 3])))
+      ;; preserves the Date literal exactly, without relying on one stage/filter index.
+      (is (some? absolute-wire))
+      (is (= "2026-06-01" (nth absolute-wire 2)))
+      (is (contains? #{"day" :day} (nth absolute-wire 3)))
       ;; Current dima.6 incorrectly requires every string in an absolute-datetime
       ;; literal slot to parse as LocalDateTime.
       (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
