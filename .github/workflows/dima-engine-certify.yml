@@ -5,16 +5,14 @@ on:
     branches:
       - feat/p13c-native-filter-attestation
       - "feat/dima-engine-*"
+      - release/r8-dima8-material-observation
     paths:
       - "src/metabase/dima/**"
       - "test/metabase/dima/**"
-      - "src/metabase/api_routes/routes.clj"
-      - ".dima/docker/Dockerfile.c0"
       - ".dima/release.json"
+      - ".dima/docker/Dockerfile.c0"
       - ".dima/tools/patch_surface.py"
       - ".github/workflows/dima-engine-certify.yml"
-      - ".github/workflows/dima-engine-p13b.yml"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,7 +20,7 @@ permissions:
 
 env:
   UPSTREAM_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
-  RUNTIME_TAG: v0.63.18-dima.5
+  RUNTIME_TAG: v0.63.18-dima.8
   IMAGE_REPOSITORY: ghcr.io/upcytech/dima-metabase-engine
   CANDIDATE_SHA: ${{ github.sha }}
   CACHE_SCOPE: dima-engine-c0-v06318
@@ -36,21 +34,27 @@ jobs:
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 64
-
       - name: Prepare backend
         uses: ./.github/actions/prepare-backend
         with:
           java-version: "25"
-
-      - name: Run bounded Dima engine tests
+      - name: Run bounded Dima dima.8 tests
         run: >-
           clojure -X:dev:ci:test:oss:oss-dev
-          :only '[metabase.dima.native-attestation-test metabase.dima.api-test]'
-
+          :only '[metabase.dima.native-attestation-test
+                   metabase.dima.native-material-observation-test
+                   metabase.dima.api-test
+                   metabase.dima.native-execution-test
+                   metabase.dima.execution-api-contract-test]'
       - name: Require Dima namespaces
         run: >-
           clojure -M:dev:oss:oss-dev
-          -e "(require 'metabase.dima.native-attestation 'metabase.dima.api)"
+          -e "(require 'metabase.dima.native-occurrence
+                       'metabase.dima.native-attestation
+                       'metabase.dima.native-query-compat
+                       'metabase.dima.native-material-observation
+                       'metabase.dima.native-execution
+                       'metabase.dima.api)"
 
   patch-surface:
     runs-on: ubuntu-latest
@@ -60,10 +64,12 @@ jobs:
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 64
-
-      - name: Generate bounded patch surface
+      - name: Prove bounded upstream patch surface
         run: |
           set -euo pipefail
+          git cat-file -e "$UPSTREAM_SHA^{commit}" 2>/dev/null || \
+            git fetch --no-tags --depth=1 origin "$UPSTREAM_SHA"
+          git cat-file -e "$UPSTREAM_SHA^{commit}"
           mkdir -p .dima/reports/certify
           python .dima/tools/patch_surface.py \
             --base "$UPSTREAM_SHA" \
@@ -79,10 +85,9 @@ jobs:
           assert p["deleted_upstream_file_count"] == 0, p
           assert p["sync_conflict_count"] == 0, p
           PY
-
       - uses: actions/upload-artifact@v4
         with:
-          name: dima-engine-patch-surface-${{ env.CANDIDATE_SHA }}
+          name: dima8-patch-surface-${{ env.CANDIDATE_SHA }}
           path: .dima/reports/certify/
           if-no-files-found: error
           retention-days: 30
@@ -100,9 +105,7 @@ jobs:
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 1
-
       - uses: docker/setup-buildx-action@v3
-
       - name: Define exact build identity
         id: identity
         shell: bash
@@ -111,8 +114,7 @@ jobs:
           BUILD_IDENTITY="github-actions:${GITHUB_RUN_ID}:${CANDIDATE_SHA}"
           echo "BUILD_IDENTITY=$BUILD_IDENTITY" >> "$GITHUB_ENV"
           echo "build_identity=$BUILD_IDENTITY" >> "$GITHUB_OUTPUT"
-
-      - name: Build exact candidate once with GitHub-native BuildKit cache
+      - name: Build exact candidate once
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -130,33 +132,25 @@ jobs:
             DIMA_ENGINE_BUILD_IDENTITY=${{ env.BUILD_IDENTITY }}
           cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
           cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
-
-      - name: Smoke exact source-built candidate before publication
+      - name: Smoke source-built candidate
         shell: bash
         run: |
           set -euo pipefail
           IMAGE_TAG="$IMAGE_REPOSITORY:sha-$CANDIDATE_SHA"
-          docker run -d --rm \
-            --name dima-engine-source-smoke \
-            -p 127.0.0.1:3313:3000 \
-            -e DIMA_ENGINE_IMAGE_IDENTITY="source-build:$CANDIDATE_SHA" \
-            "$IMAGE_TAG"
-          trap 'docker logs dima-engine-source-smoke || true; docker stop dima-engine-source-smoke || true' EXIT
+          docker run -d --rm --name dima8-source-smoke -p 127.0.0.1:3313:3000 \
+            -e DIMA_ENGINE_IMAGE_IDENTITY="source-build:$CANDIDATE_SHA" "$IMAGE_TAG"
+          trap 'docker logs dima8-source-smoke || true; docker rm -f dima8-source-smoke 2>/dev/null || true' EXIT
           for i in $(seq 1 120); do
-            if curl -fsS http://127.0.0.1:3313/api/health | grep -q '"status":"ok"'; then
-              exit 0
-            fi
+            curl -fsS http://127.0.0.1:3313/api/health | grep -q '"status":"ok"' && exit 0
             sleep 2
           done
           exit 1
-
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish exact smoke-tested image and resolve immutable digest
+          password: ${{ github.token }}
+      - name: Publish exact image and resolve digest
         id: publish
         shell: bash
         run: |
@@ -166,31 +160,28 @@ jobs:
           REGISTRY_DIGEST="$(docker buildx imagetools inspect "$IMAGE_TAG" | awk '/^Digest:/ {print $2; exit}')"
           case "$REGISTRY_DIGEST" in
             sha256:????????????????????????????????????????????????????????????????) ;;
-            *) echo "invalid registry digest: $REGISTRY_DIGEST" >&2; exit 1 ;;
+            *) echo "invalid registry digest" >&2; exit 1 ;;
           esac
           IMMUTABLE_IMAGE_REF="$IMAGE_REPOSITORY@$REGISTRY_DIGEST"
           echo "REGISTRY_DIGEST=$REGISTRY_DIGEST" >> "$GITHUB_ENV"
           echo "IMMUTABLE_IMAGE_REF=$IMMUTABLE_IMAGE_REF" >> "$GITHUB_ENV"
           echo "registry_digest=$REGISTRY_DIGEST" >> "$GITHUB_OUTPUT"
           echo "immutable_image_ref=$IMMUTABLE_IMAGE_REF" >> "$GITHUB_OUTPUT"
-
-      - name: Pull exact digest and assert RepoDigest
+      - name: Pull exact digest publicly without registry auth
         shell: bash
         run: |
           set -euo pipefail
-          docker rm -f dima-engine-source-smoke 2>/dev/null || true
+          docker rm -f dima8-source-smoke 2>/dev/null || true
           docker image rm "$IMAGE_REPOSITORY:sha-$CANDIDATE_SHA" 2>/dev/null || true
+          docker image rm "$IMMUTABLE_IMAGE_REF" 2>/dev/null || true
+          docker logout ghcr.io || true
           docker pull "$IMMUTABLE_IMAGE_REF"
-          docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$IMMUTABLE_IMAGE_REF" \
-            | grep -Fx "$IMMUTABLE_IMAGE_REF"
-
-      - name: Verify pulled digest through runtime identity and emit certified-image receipt
+          docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$IMMUTABLE_IMAGE_REF" | grep -Fx "$IMMUTABLE_IMAGE_REF"
+      - name: Verify pulled digest identity
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --rm \
-            --name dima-engine-digest-verify \
-            -p 127.0.0.1:3314:3000 \
+          docker run -d --rm --name dima8-digest-verify -p 127.0.0.1:3314:3000 \
             -e DIMA_ENGINE_REPOSITORY=UpcyTech/dima-metabase-engine \
             -e DIMA_ENGINE_REVISION_SHA="$CANDIDATE_SHA" \
             -e DIMA_ENGINE_UPSTREAM_BASE_SHA="$UPSTREAM_SHA" \
@@ -198,68 +189,57 @@ jobs:
             -e DIMA_ENGINE_BUILD_IDENTITY="$BUILD_IDENTITY" \
             -e DIMA_ENGINE_IMAGE_IDENTITY="$REGISTRY_DIGEST" \
             "$IMMUTABLE_IMAGE_REF"
-          trap 'docker logs dima-engine-digest-verify || true; docker rm -f dima-engine-digest-verify 2>/dev/null || true' EXIT
-
+          trap 'docker logs dima8-digest-verify || true; docker rm -f dima8-digest-verify 2>/dev/null || true' EXIT
           for i in $(seq 1 120); do
-            if curl -fsS http://127.0.0.1:3314/api/health | grep -q '"status":"ok"'; then
-              break
-            fi
+            if curl -fsS http://127.0.0.1:3314/api/health | grep -q '"status":"ok"'; then break; fi
             sleep 2
             test "$i" -lt 120
           done
-
           python - <<'PY'
-          import json
-          import os
-          import urllib.request
+          import json, os, urllib.request
           from pathlib import Path
           from uuid import UUID
 
           base = "http://127.0.0.1:3314"
-          email = "certify@dima-engine.local"
-          password = "DimaEngineCertify2026!"
+          email = "certify-dima8@localhost.invalid"
+          password = "Cert-" + os.environ["CANDIDATE_SHA"][:20] + "-Aa1!"
 
-          def request(method, path, payload=None, session=None):
+          def req(method, path, payload=None, session=None):
               data = None if payload is None else json.dumps(payload).encode()
-              req = urllib.request.Request(base + path, data=data, method=method)
-              req.add_header("Accept", "application/json")
+              r = urllib.request.Request(base + path, data=data, method=method)
+              r.add_header("Accept", "application/json")
               if data is not None:
-                  req.add_header("Content-Type", "application/json")
+                  r.add_header("Content-Type", "application/json")
               if session:
-                  req.add_header("X-Metabase-Session", session)
-              with urllib.request.urlopen(req, timeout=30) as response:
+                  r.add_header("X-Metabase-Session", session)
+              with urllib.request.urlopen(r, timeout=30) as response:
                   body = response.read()
                   return json.loads(body.decode()) if body else None
 
-          props = request("GET", "/api/session/properties")
-          setup_token = props.get("setup-token")
-          if not setup_token:
-              raise RuntimeError("fresh digest runtime has no setup-token")
-          # v0.63.18 setup API requires token + user + prefs. Database creation is
-          # intentionally absent: certified-image identity verification needs only one
-          # authenticated subject, not an analytical database or a second infrastructure fixture.
-          setup = request("POST", "/api/setup", {
-              "token": setup_token,
+          props = req("GET", "/api/session/properties")
+          token = props.get("setup-token")
+          if not token:
+              raise RuntimeError("setup token missing")
+          setup = req("POST", "/api/setup", {
+              "token": token,
               "user": {
                   "email": email,
                   "first_name": "Dima",
                   "last_name": "Certify",
                   "password": password,
               },
-              "prefs": {
-                  "site_name": "Dima Engine Certification",
-              },
+              "prefs": {"site_name": "Dima Engine Certification"},
           })
           session = str((setup or {}).get("id") or "")
           if not session:
-              session = str(request("POST", "/api/session", {
+              session = str(req("POST", "/api/session", {
                   "username": email,
                   "password": password,
               }).get("id") or "")
           if not session:
               raise RuntimeError("certification session missing")
 
-          identity = request("GET", "/api/dima/engine/v1/identity", session=session)
+          identity = req("GET", "/api/dima/engine/v1/identity", session=session)
           expected = {
               "repository": "UpcyTech/dima-metabase-engine",
               "revision_sha": os.environ["CANDIDATE_SHA"],
@@ -270,39 +250,32 @@ jobs:
           }
           for key, value in expected.items():
               if str(identity.get(key)) != value:
-                  raise RuntimeError(f"identity mismatch {key}: expected={value!r} got={identity.get(key)!r}")
+                  raise RuntimeError(f"identity mismatch {key}")
           UUID(str(identity["runtime_instance_id"]))
 
           receipt = {
               "schema_version": "dima_engine_certified_image_v1",
               "engine_repository": "UpcyTech/dima-metabase-engine",
               "engine_revision_sha": os.environ["CANDIDATE_SHA"],
-              "engine_release": "0.63.18-dima.5",
+              "engine_release": "0.63.18-dima.8",
               "upstream_base_sha": os.environ["UPSTREAM_SHA"],
               "source_certification_run_id": os.environ["GITHUB_RUN_ID"],
               "build_identity": os.environ["BUILD_IDENTITY"],
-              "registry_repository": os.environ["IMAGE_REPOSITORY"],
               "registry_digest": os.environ["REGISTRY_DIGEST"],
               "immutable_image_ref": os.environ["IMMUTABLE_IMAGE_REF"],
+              "identity_runtime_instance_id": identity["runtime_instance_id"],
               "smoke_result": "PASS",
               "pulled_by_digest_verification": "PASS",
-              "identity_repository": identity["repository"],
-              "identity_revision_sha": identity["revision_sha"],
-              "identity_upstream_sha": identity["upstream_base_sha"],
-              "identity_runtime_tag": identity["runtime_tag"],
-              "identity_build_identity": identity["build_identity"],
-              "identity_image_identity": identity["image_identity"],
-              "identity_runtime_instance_id": identity["runtime_instance_id"],
+              "public_unauthenticated_digest_pull": "PASS",
           }
           out = Path(".dima/reports/certify/DIMA_ENGINE_CERTIFIED_IMAGE.json")
           out.parent.mkdir(parents=True, exist_ok=True)
           out.write_text(json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8")
           print(json.dumps(receipt, sort_keys=True))
           PY
-
       - uses: actions/upload-artifact@v4
         with:
-          name: dima-engine-certified-image-${{ env.CANDIDATE_SHA }}
+          name: dima8-certified-image-${{ env.CANDIDATE_SHA }}
           path: .dima/reports/certify/DIMA_ENGINE_CERTIFIED_IMAGE.json
           if-no-files-found: error
           retention-days: 30
@@ -313,7 +286,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Certify exact engine candidate gates
+      - name: Certify exact dima.8 candidate gates
         env:
           FOCUSED_RESULT: ${{ needs.focused.result }}
           PATCH_SURFACE_RESULT: ${{ needs.patch-surface.result }}
@@ -328,12 +301,8 @@ jobs:
           case "$REGISTRY_DIGEST" in sha256:*) ;; *) exit 1 ;; esac
           case "$IMMUTABLE_IMAGE_REF" in "$IMAGE_REPOSITORY@sha256:"*) ;; *) exit 1 ;; esac
           {
-            echo "### DIMA ENGINE CERTIFIED CANDIDATE"
+            echo "### DIMA ENGINE 0.63.18-dima.8 CERTIFIED CANDIDATE"
             echo
             echo "- candidate SHA: $CANDIDATE_SHA"
-            echo "- runtime tag: $RUNTIME_TAG"
-            echo "- focused: $FOCUSED_RESULT"
-            echo "- patch-surface: $PATCH_SURFACE_RESULT"
-            echo "- source-build/publish/digest-verify: $SOURCE_BUILD_RESULT"
             echo "- immutable image: $IMMUTABLE_IMAGE_REF"
           } >> "$GITHUB_STEP_SUMMARY"
