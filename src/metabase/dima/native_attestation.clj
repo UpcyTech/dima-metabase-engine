@@ -24,6 +24,15 @@
 
 (set! *warn-on-reflection* true)
 
+(defn- fail!
+  ([code status message]
+   (fail! code status message nil))
+  ([code status message data]
+   (throw (ex-info message
+                   (merge {:status-code status
+                           :dima/error-code code}
+                          data)))))
+
 (def ^:dynamic *runtime-identity-override*
   "Compatibility binding for historical P13 tests. Production callers never bind this."
   nil)
