@@ -59,6 +59,9 @@ jobs:
       - name: Generate P13B patch surface
         run: |
           set -euo pipefail
+          git cat-file -e "$UPSTREAM_SHA^{commit}" 2>/dev/null || \
+            git fetch --no-tags --depth=1 origin "$UPSTREAM_SHA"
+          git cat-file -e "$UPSTREAM_SHA^{commit}"
           mkdir -p .dima/reports/p13b
           python .dima/tools/patch_surface.py             --base "$UPSTREAM_SHA"             --head HEAD             --json-out .dima/reports/p13b/DIMA_PATCH_SURFACE.json             --md-out .dima/reports/p13b/DIMA_PATCH_SURFACE.md
           python - <<'PY'
