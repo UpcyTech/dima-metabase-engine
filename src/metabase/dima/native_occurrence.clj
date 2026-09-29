@@ -218,22 +218,22 @@
   (let [current-user api/*current-user-id*
         originator   (:user_id conversation)]
     (when-not current-user
-      (fail! "NATIVE_ATTESTATION_AUTHENTICATION_REQUIRED" 401
-             "Native analytical attestation requires an authenticated Metabase subject"))
+      (fail! "NATIVE_OCCURRENCE_AUTHENTICATION_REQUIRED" 401
+             "Native query occurrence lookup requires an authenticated Metabase subject"))
     (when-not originator
       (fail! "NATIVE_QUERY_PRODUCER_INVALID" 409
              "Conversation has no stable originator subject"))
     (when-not (= current-user originator)
-      (fail! "NATIVE_ATTESTATION_SUBJECT_MISMATCH" 403
-             "Current Metabase subject is not the certified query-producing conversation originator"
+      (fail! "NATIVE_OCCURRENCE_SUBJECT_MISMATCH" 403
+             "Current Metabase subject is not the query-producing conversation originator"
              {:current-user-id current-user
               :conversation-originator-id originator}))
     current-user))
 
 (defn- assert-supported-conversation! [conversation messages]
   (when (shared-conversation? conversation messages)
-    (fail! "SHARED_CONVERSATION_ATTESTATION_UNSUPPORTED" 409
-           "P13B-v1 does not certify shared or Slack conversation attribution")))
+    (fail! "SHARED_CONVERSATION_OCCURRENCE_UNSUPPORTED" 409
+           "Neutral native occurrence identity does not support shared or Slack conversation attribution")))
 
 (defn- load-conversation-identity! [conversation-id]
   (or (t2/select-one [:model/MetabotConversation

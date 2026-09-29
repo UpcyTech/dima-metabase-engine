@@ -57,6 +57,33 @@
   [query]
   (dima.occurrence/exact-query-fingerprint query))
 
+(defn- type-name [value]
+  (cond
+    (keyword? value) (u/qualified-name value)
+    (string? value) value
+    (nil? value) nil
+    :else (str value)))
+
+(defn- load-occurrence!
+  "P13 compatibility wrapper preserving historical attestation-facing error codes."
+  [conversation-id native-query-id]
+  (try
+    (dima.occurrence/load-occurrence! conversation-id native-query-id)
+    (catch clojure.lang.ExceptionInfo e
+      (let [data (ex-data e)
+            code (:dima/error-code data)
+            p13-code (case code
+                       "NATIVE_OCCURRENCE_AUTHENTICATION_REQUIRED"
+                       "NATIVE_ATTESTATION_AUTHENTICATION_REQUIRED"
+                       "NATIVE_OCCURRENCE_SUBJECT_MISMATCH"
+                       "NATIVE_ATTESTATION_SUBJECT_MISMATCH"
+                       "SHARED_CONVERSATION_OCCURRENCE_UNSUPPORTED"
+                       "SHARED_CONVERSATION_ATTESTATION_UNSUPPORTED"
+                       code)]
+        (throw (ex-info (ex-message e)
+                        (assoc data :dima/error-code p13-code)
+                        e))))))
+
 (defn- stage-numbers [query]
   (range (lib/stage-count query)))
 
@@ -352,7 +379,7 @@
     (fail! "NATIVE_QUERY_OCCURRENCE_INVALID_LOCATOR" 400
            "native_query_id must be non-empty"))
   (let [{:keys [message tool-call-id producer-tool query material-query-count authenticated-subject]}
-        (dima.occurrence/load-occurrence! (str conversation_id) native_query_id)
+        (load-occurrence! (str conversation_id) native_query_id)
         exact-query       (exact-serialized-query query)
         fingerprint       (exact-query-fingerprint query)
         runtime-query     (dima.compat/hydrate-runtime-query! query)
