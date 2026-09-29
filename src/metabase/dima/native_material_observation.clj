@@ -51,9 +51,11 @@
     (when-not (pos-int? database-id)
       (fail! "NATIVE_MATERIAL_DATABASE_ID_INVALID"
              "Exact persisted query has no positive database id"))
-    (lib/query
-     (lib-be/application-database-metadata-provider database-id)
-     (lib/prepare-after-deserialization exact))))
+    ;; Re-enter through the exact backend request-boundary normalization used by
+    ;; /api/dataset: strict Lib-BE normalization first, then Lib wire decoding.
+    ;; This delegates representation handling to Metabase rather than Dima.
+    (-> (lib-be/normalize-query nil exact {:strict? true})
+        lib/prepare-after-deserialization)))
 
 (defn- metric-observations [query]
   (vec
