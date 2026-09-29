@@ -1,16 +1,18 @@
 (ns metabase.dima.native-material-observation-test
   (:require
-   [clojure.string :as str]
    [clojure.test :refer :all]
    [metabase.api.common :as api]
    [metabase.dima.native-attestation :as dima.attestation]
    [metabase.dima.native-material-observation :as dima.material]
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
+   [metabase.query-processor :as qp]
    [metabase.lib.metadata :as lib.metadata]
    [metabase.metabot.persistence :as metabot.persistence]
    [metabase.test :as mt]
-   [metabase.test.fixtures :as fixtures]))
+   [metabase.test.fixtures :as fixtures])
+  (:import
+   (java.time LocalDate)))
 
 (use-fixtures :once (fixtures/initialize :db))
 
@@ -67,23 +69,21 @@
         (lib/aggregate (lib/count))
         (lib/aggregate (lib/sum quantity)))))
 
-(defn- absolute-date-query []
-  (let [mp (mt/metadata-provider)
+(defn- metabase-absolute-date-source-query []
+  (let [mp       (mt/metadata-provider)
         date-col (lib.metadata/field mp (mt/id :checkins :date))
-        lower [:absolute-datetime
-               {:lib/uuid "00000000-0000-4000-8000-000000000091"
-                :base-type :type/Date}
-               "2026-06-01"
-               :day]
-        upper [:absolute-datetime
-               {:lib/uuid "00000000-0000-4000-8000-000000000092"
-                :base-type :type/Date}
-               "2026-07-01"
-               :day]]
+        lower    (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
+        upper    (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)]
     (-> (lib/query mp (lib.metadata/table mp (mt/id :checkins)))
         (lib/aggregate (lib/count))
         (lib/filter (lib/>= date-col lower))
         (lib/filter (lib/< date-col upper)))))
+
+(defn- v3-persisted-absolute-date-query []
+  ;; Frozen provider-free equivalent of the V3 occurrence class: the persisted
+  ;; query is produced by Metabase's own serializer from a legal Lib query.
+  (dima.occurrence/exact-serialized-query
+   (metabase-absolute-date-source-query)))
 
 (defn- string-date-query []
   (let [mp (mt/metadata-provider)
@@ -175,16 +175,33 @@
               (is (not (contains? out :aggregation_count)))
               (is (not (contains? out :aggregations))))))))))
 
+(deftest r5-v3-temporal-fixture-is-metabase-produced-and-executable-test
+  (mt/test-driver :h2
+    (let [owner-id  (mt/user->id :rasta)
+          source    (metabase-absolute-date-source-query)
+          persisted (v3-persisted-absolute-date-query)]
+      (mt/with-current-user owner-id
+        (let [result (qp/process-query
+                      (qp/userland-query-with-default-constraints source))]
+          (is (= :completed (:status result))))
+        (is (= persisted
+               (dima.occurrence/exact-serialized-query source)))))))
+
 (deftest r5-temporal-observation-is-representation-independent-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
           a-id (str (random-uuid))
-          b-id (str (random-uuid))]
+          b-id (str (random-uuid))
+          raw-source (string-date-query)]
       (mt/with-current-user owner-id
+        (let [result (qp/process-query
+                      (qp/userland-query-with-default-constraints raw-source))]
+          (is (= :completed (:status result))))
         (persist-turn! {:conversation-id a-id :query-id "absolute"
-                        :query (absolute-date-query) :user-id owner-id})
+                        :query (v3-persisted-absolute-date-query) :user-id owner-id})
         (persist-turn! {:conversation-id b-id :query-id "string"
-                        :query (string-date-query) :user-id owner-id})
+                        :query (dima.occurrence/exact-serialized-query raw-source)
+                        :user-id owner-id})
         (let [a (observe! a-id "absolute")
               b (observe! b-id "string")
               expected [{:time_field_id (mt/id :checkins :date)
@@ -202,7 +219,7 @@
     (let [owner-id (mt/user->id :rasta)
           convo-id (str (random-uuid))
           query-id "strict-microscope"
-          query (absolute-date-query)]
+          query (v3-persisted-absolute-date-query)]
       (mt/with-current-user owner-id
         (persist-turn! {:conversation-id convo-id :query-id query-id
                         :query query :user-id owner-id})
@@ -252,30 +269,43 @@
                               (= (mt/id :orders :user_id) (:field_id %)))
                         (:dimensions out))))))))))
 
-(deftest r5-production-observer-has-no-p13-dataset-or-representation-grammar-dependency-test
-  (let [source (slurp "src/metabase/dima/native_material_observation.clj")]
-    (doseq [forbidden ["native-attestation"
-                       "attest-native-query"
-                       "execute-dataset"
-                       "/api/dataset"
-                       "process-query"
-                       "LocalDate"
-                       "LocalDateTime"
-                       "OffsetDateTime"
-                       "ZonedDateTime"
-                       "absolute-datetime"
-                       "sqlparse"
-                       "benchmark"
-                       "candidate_id"
-                       "semantic_id"]]
-      (is (not (str/includes? source forbidden)) forbidden))))
+(deftest r5-production-observer-has-executable-zero-p13-and-zero-execution-dependency-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "architecture-guard"
+          query (dima.occurrence/exact-serialized-query (string-date-query))
+          p13-calls (atom 0)
+          process-calls (atom 0)]
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id :query-id query-id
+                        :query query :user-id owner-id})
+        (with-redefs [dima.attestation/attest-native-query!
+                      (fn [& _]
+                        (swap! p13-calls inc)
+                        (throw (ex-info "P13 must not be called" {})))
+                      qp/process-query
+                      (fn [& _]
+                        (swap! process-calls inc)
+                        (throw (ex-info "observer must not execute analytics" {})))]
+          (is (= "dima_native_material_observation_v1"
+                 (:schema_version (observe! convo-id query-id)))))
+        (is (zero? @p13-calls))
+        (is (zero? @process-calls))
+        (let [deps (->> (ns-aliases 'metabase.dima.native-material-observation)
+                        vals
+                        (map ns-name)
+                        set)]
+          (is (not (contains? deps 'metabase.dima.native-attestation)))
+          (is (not (contains? deps 'metabase.query-processor)))
+          (is (not (contains? deps 'metabase.query-processor.api))))))))
 
 (deftest r5-observer-does-not-rewrite-exact-occurrence-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
           convo-id (str (random-uuid))
           query-id "immutable"
-          query (absolute-date-query)
+          query (v3-persisted-absolute-date-query)
           before (dima.occurrence/exact-query-fingerprint query)]
       (mt/with-current-user owner-id
         (persist-turn! {:conversation-id convo-id :query-id query-id

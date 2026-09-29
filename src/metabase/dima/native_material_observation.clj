@@ -7,9 +7,7 @@
   Dima business semantics."
   (:require
    [metabase.dima.native-occurrence :as dima.occurrence]
-   [metabase.lib-be.core :as lib-be]
    [metabase.lib.core :as lib]
-   [metabase.query-processor.preprocess :as qp.preprocess]
    [metabase.types.core]
    [metabase.util.json :as json]))
 
@@ -45,17 +43,6 @@
 (defn- temporal-column? [column]
   (let [column-type (or (:effective-type column) (:base-type column))]
     (boolean (and column-type (isa? column-type :type/Temporal)))))
-
-(defn- material-runtime-query [exact]
-  (let [database-id (or (:database exact) (get exact "database"))]
-    (when-not (pos-int? database-id)
-      (fail! "NATIVE_MATERIAL_DATABASE_ID_INVALID"
-             "Exact persisted query has no positive database id"))
-    ;; Re-enter through the exact backend request-boundary normalization used by
-    ;; /api/dataset: strict Lib-BE normalization first, then Lib wire decoding.
-    ;; This delegates representation handling to Metabase rather than Dima.
-    (-> (lib-be/normalize-query nil exact {:strict? true})
-        lib/prepare-after-deserialization)))
 
 (defn- metric-observations [query]
   (vec
@@ -278,8 +265,9 @@
 (defn observe-native-query-material!
   "Observe material native semantics for one already-persisted successful Metabot occurrence.
 
-  The exact occurrence remains immutable. A separate Metabase-normalized/preprocessed view is used
-  only for semantic observation; no dataset execution happens here."
+  The exact occurrence remains immutable. Material meaning is read from the already-restored
+  Metabase Lib query owned by the neutral occurrence seam; exact serialization is used only by
+  occurrence identity/fingerprinting. No dataset execution or QP preprocessing happens here."
   [{:keys [conversation_id native_query_id]}]
   (when-not (instance? java.util.UUID conversation_id)
     (fail! "NATIVE_MATERIAL_LOCATOR_INVALID" 400
@@ -291,13 +279,10 @@
                          (str conversation_id)
                          native_query_id)
         original        (:query occurrence)
-        exact           (dima.occurrence/exact-serialized-query original)
         fingerprint     (dima.occurrence/exact-query-fingerprint original)
-        runtime-query   (material-runtime-query exact)
-        preprocessed    (qp.preprocess/preprocess runtime-query)
         metrics         (metric-observations original)
         metric-index    (metric-ranking-index original metrics)
-        filters         (filter-observations preprocessed)
+        filters         (filter-observations original)
         ranking         (ranking-observations original metric-index)
         breakouts       (breakout-dimensions original)
         dimensions      (vec (distinct
