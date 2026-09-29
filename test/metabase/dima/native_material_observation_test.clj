@@ -8,8 +8,6 @@
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
    [metabase.lib.metadata :as lib.metadata]
-   [metabase.lib.test-util :as lib.tu]
-   [metabase.lib.test-metadata :as meta]
    [metabase.metabot.persistence :as metabot.persistence]
    [metabase.test :as mt]
    [metabase.test.fixtures :as fixtures]))
@@ -61,33 +59,17 @@
      {:conversation_id (java.util.UUID/fromString conversation-id)
       :native_query_id query-id})))
 
-(def ^:private metric-id 900071)
-(def ^:private metric-entity-id "r5nativebusinessmetric0000001")
-
-(defn- metric-query []
-  (let [base-mp (mt/metadata-provider)
-        orders  (lib.metadata/table base-mp (mt/id :orders))
-        definition (lib/aggregate (lib/query base-mp orders) (lib/count))
-        metric {:lib/type :metadata/card
-                :id metric-id
-                :entity-id metric-entity-id
-                :database-id (mt/id)
-                :table-id (mt/id :orders)
-                :name "R5 Native Metric"
-                :type :metric
-                :dataset-query definition}
-        mp (lib/composed-metadata-provider
-            base-mp (lib.tu/mock-metadata-provider {:cards [metric]}))
-        quantity (lib.metadata/field mp (mt/id :orders :quantity))
-        query (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
-                  (lib/aggregate (lib.metadata/metric mp metric-id))
-                  (lib/aggregate (lib/count))
-                  (lib/aggregate (lib/sum quantity)))]
-    {:query query :mp mp}))
+(defn- metric-query [metric-id]
+  (let [mp       (mt/metadata-provider)
+        quantity (lib.metadata/field mp (mt/id :orders :quantity))]
+    (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+        (lib/aggregate (lib.metadata/metric mp metric-id))
+        (lib/aggregate (lib/count))
+        (lib/aggregate (lib/sum quantity)))))
 
 (defn- absolute-date-query []
-  (let [mp meta/metadata-provider
-        date-col (lib.metadata/field mp (meta/id :checkins :date))
+  (let [mp (mt/metadata-provider)
+        date-col (lib.metadata/field mp (mt/id :checkins :date))
         lower [:absolute-datetime
                {:lib/uuid "00000000-0000-4000-8000-000000000091"
                 :base-type :type/Date}
@@ -98,15 +80,15 @@
                 :base-type :type/Date}
                "2026-07-01"
                :day]]
-    (-> (lib/query mp (lib.metadata/table mp (meta/id :checkins)))
+    (-> (lib/query mp (lib.metadata/table mp (mt/id :checkins)))
         (lib/aggregate (lib/count))
         (lib/filter (lib/>= date-col lower))
         (lib/filter (lib/< date-col upper)))))
 
 (defn- string-date-query []
-  (let [mp meta/metadata-provider
-        date-col (lib.metadata/field mp (meta/id :checkins :date))]
-    (-> (lib/query mp (lib.metadata/table mp (meta/id :checkins)))
+  (let [mp (mt/metadata-provider)
+        date-col (lib.metadata/field mp (mt/id :checkins :date))]
+    (-> (lib/query mp (lib.metadata/table mp (mt/id :checkins)))
         (lib/aggregate (lib/count))
         (lib/filter (lib/>= date-col "2026-06-01"))
         (lib/filter (lib/< date-col "2026-07-01")))))
@@ -168,18 +150,30 @@
     (let [owner-id (mt/user->id :rasta)
           convo-id (str (random-uuid))
           query-id "metric-multi"
-          {:keys [query]} (metric-query)]
-      (mt/with-current-user owner-id
-        (persist-turn! {:conversation-id convo-id :query-id query-id
-                        :query query :user-id owner-id})
-        (let [out (observe! convo-id query-id)]
-          (is (= [{:stage_number 0
-                   :aggregation_index 0
-                   :metabase_metric_id metric-id
-                   :metabase_metric_entity_id metric-entity-id}]
-                 (:native_metrics out)))
-          (is (not (contains? out :aggregation_count)))
-          (is (not (contains? out :aggregations))))))))
+          definition (lib/aggregate
+                      (lib/query (mt/metadata-provider)
+                                 (lib.metadata/table (mt/metadata-provider) (mt/id :orders)))
+                      (lib/count))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Native Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (metric-query metric-id)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id :query-id query-id
+                            :query query :user-id owner-id})
+            (let [out (observe! convo-id query-id)]
+              (is (= [{:stage_number 0
+                       :aggregation_index 0
+                       :metabase_metric_id metric-id
+                       :metabase_metric_entity_id metric-entity-id}]
+                     (:native_metrics out)))
+              (is (not (contains? out :aggregation_count)))
+              (is (not (contains? out :aggregations))))))))))
 
 (deftest r5-temporal-observation-is-representation-independent-test
   (mt/test-driver :h2
@@ -193,8 +187,8 @@
                         :query (string-date-query) :user-id owner-id})
         (let [a (observe! a-id "absolute")
               b (observe! b-id "string")
-              expected [{:time_field_id (meta/id :checkins :date)
-                         :table_id (meta/id :checkins)
+              expected [{:time_field_id (mt/id :checkins :date)
+                         :table_id (mt/id :checkins)
                          :lower_bound "2026-06-01"
                          :lower_inclusive true
                          :upper_bound "2026-07-01"
@@ -226,24 +220,37 @@
     (let [owner-id (mt/user->id :rasta)
           convo-id (str (random-uuid))
           query-id "ranked"
-          {:keys [query mp]} (metric-query)
-          user-id-col (lib.metadata/field mp (mt/id :orders :user_id))
-          ranked (-> query
-                     (lib/breakout user-id-col)
-                     (lib/order-by (lib/aggregation-ref query 0) :desc)
-                     (lib/limit 5))]
-      (mt/with-current-user owner-id
-        (persist-turn! {:conversation-id convo-id :query-id query-id
-                        :query ranked :user-id owner-id})
-        (let [out (observe! convo-id query-id)
-              rank (first (:ranking out))]
-          (is (= "desc" (:direction rank)))
-          (is (= 5 (:limit rank)))
-          (is (= "metric" (get-in rank [:target :kind])))
-          (is (= metric-id (get-in rank [:target :metabase_metric_id])))
-          (is (some #(and (= "breakout" (:role %))
-                          (= (mt/id :orders :user_id) (:field_id %)))
-                    (:dimensions out))))))))
+          mp0 (mt/metadata-provider)
+          definition (lib/aggregate
+                      (lib/query mp0 (lib.metadata/table mp0 (mt/id :orders)))
+                      (lib/count))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Ranked Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [mp (mt/metadata-provider)
+              base (metric-query metric-id)
+              user-id-col (lib.metadata/field mp (mt/id :orders :user_id))
+              ranked (-> base
+                         (lib/breakout user-id-col)
+                         (lib/order-by (lib/aggregation-ref base 0) :desc)
+                         (lib/limit 5))]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id :query-id query-id
+                            :query ranked :user-id owner-id})
+            (let [out (observe! convo-id query-id)
+                  rank (first (:ranking out))]
+              (is (= "desc" (:direction rank)))
+              (is (= 5 (:limit rank)))
+              (is (= "metric" (get-in rank [:target :kind])))
+              (is (= metric-id (get-in rank [:target :metabase_metric_id])))
+              (is (some #(and (= "breakout" (:role %))
+                              (= (mt/id :orders :user_id) (:field_id %)))
+                        (:dimensions out))))))))))
 
 (deftest r5-production-observer-has-no-p13-dataset-or-representation-grammar-dependency-test
   (let [source (slurp "src/metabase/dima/native_material_observation.clj")]
