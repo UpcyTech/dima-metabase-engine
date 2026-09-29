@@ -289,7 +289,7 @@
                  node))
              (tree-seq coll? seq hydrated))]
         (is (instance? java.time.LocalDate (nth hydrated-absolute 2)))
-        (is (= exact (#'dima.attestation/exact-serialized-query hydrated))))))))
+        (is (= exact (#'dima.attestation/exact-serialized-query hydrated)))))))
 
 (deftest mixed-native-metric-aggregation-capability-owner-reproduction-test
   (testing "one governed native metric can coexist with other legal aggregations beyond the dima.6 attestation bound"
