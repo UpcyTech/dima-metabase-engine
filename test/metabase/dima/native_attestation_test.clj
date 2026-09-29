@@ -326,9 +326,10 @@
                               (lib/aggregate (lib/count))
                               (lib/aggregate (lib/sum quantity)))
           refs            (#'dima.attestation/native-metric-references mixed)
-          observed        (-> (metric-observation-view mixed)
-                              (lib/remove-clause (nth (lib/aggregations (metric-observation-view mixed)) 2))
-                              (lib/aggregate (lib/max quantity)))]
+          observed-base   (metric-observation-view mixed)
+          observed        (assoc-in observed-base
+                                    [:stages 0 :aggregation 2]
+                                    (lib/max quantity))]
       (is (= "NATIVE_METRIC_EXPANSION_UNSUPPORTED"
              (exception-code
               #(#'dima.attestation/attested-aggregation-facts
