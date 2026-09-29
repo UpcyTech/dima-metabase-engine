@@ -53,9 +53,6 @@
                           (t/local-date-time value)
                           (catch Exception _ nil))
                         (try
-                          (t/offset-date-time value)
-                          (catch Exception _ nil))
-                        (try
                           (t/local-date value)
                           (catch Exception _ nil)))]
           (when-not (instance? Temporal hydrated)
