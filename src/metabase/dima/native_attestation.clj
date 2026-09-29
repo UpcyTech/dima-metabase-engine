@@ -336,6 +336,22 @@
                   (or (lib/aggregations query stage-number) [])))
            (stage-numbers query))))
 
+(defn- aggregation-occurrence-facts [query]
+  (vec
+   (mapcat
+    (fn [stage-number]
+      (keep-indexed
+       (fn [aggregation-index aggregation]
+         {:stage_number      stage-number
+          :aggregation_index aggregation-index
+          :fact              (aggregation-fact query stage-number aggregation)})
+       (or (lib/aggregations query stage-number) [])))
+    (stage-numbers query))))
+
+(defn- aggregation-occurrence-key
+  [{:keys [stage_number aggregation_index]}]
+  [stage_number aggregation_index])
+
 (defn- native-metric-reference
   [query stage-number aggregation-index aggregation]
   (when (= :metric (first aggregation))
@@ -372,19 +388,48 @@
   [query preprocessed native-metric-refs]
   (if (empty? native-metric-refs)
     (aggregation-facts query)
-    (let [original-count (count (aggregation-facts query))
-          expanded       (aggregation-facts preprocessed)]
-      ;; This bounded P13B seam certifies exactly one native metric aggregation.
-      ;; Do not silently pair/flatten more complex metric algebra.
-      (when-not (and (= 1 (count native-metric-refs))
-                     (= 1 original-count)
-                     (= 1 (count expanded)))
+    (let [original        (aggregation-occurrence-facts query)
+          expanded        (aggregation-occurrence-facts preprocessed)
+          original-by-key (into {} (map (juxt aggregation-occurrence-key identity)) original)
+          expanded-by-key (into {} (map (juxt aggregation-occurrence-key identity)) expanded)]
+      ;; One governed native metric may be observed after Metabase expands its
+      ;; definition, but Dima never guesses aggregation pairing. The occurrence
+      ;; positions must remain exact and every non-metric aggregation must retain
+      ;; the same physical fact across preprocessing.
+      (when-not (= 1 (count native-metric-refs))
         (fail! "NATIVE_METRIC_EXPANSION_UNSUPPORTED" 422
-               "P13B-v1 certifies one native metric aggregation only"
+               "Dima attestation certifies one native metric occurrence at a time"
                {:native-metric-reference-count (count native-metric-refs)
-                :original-aggregation-count original-count
+                :original-aggregation-count (count original)
                 :expanded-aggregation-count (count expanded)}))
-      expanded)))
+      (let [metric-ref (first native-metric-refs)
+            metric-key [(:stage_number metric-ref)
+                        (:aggregation_index metric-ref)]]
+        (when-not (and (= (set (keys original-by-key))
+                          (set (keys expanded-by-key)))
+                       (contains? original-by-key metric-key)
+                       (contains? expanded-by-key metric-key))
+          (fail! "NATIVE_METRIC_EXPANSION_UNSUPPORTED" 422
+                 "Native metric expansion changed aggregation occurrence identity"
+                 {:native-metric-reference-count 1
+                  :original-aggregation-count (count original)
+                  :expanded-aggregation-count (count expanded)}))
+        (doseq [[occurrence-key original-occurrence] original-by-key
+                :when (not= occurrence-key metric-key)]
+          (let [expanded-occurrence (get expanded-by-key occurrence-key)]
+            (when-not (= (:fact original-occurrence)
+                         (:fact expanded-occurrence))
+              (fail! "NATIVE_METRIC_EXPANSION_UNSUPPORTED" 422
+                     "Native metric preprocessing changed a non-metric aggregation"
+                     {:stage-number (first occurrence-key)
+                      :aggregation-index (second occurrence-key)}))))
+        (when (= (:fact (get original-by-key metric-key))
+                 (:fact (get expanded-by-key metric-key)))
+          (fail! "NATIVE_METRIC_EXPANSION_UNSUPPORTED" 422
+                 "Native metric occurrence did not expand to an observable physical aggregation"
+                 {:stage-number (first metric-key)
+                  :aggregation-index (second metric-key)}))
+        (mapv :fact expanded)))))
 
 (defn- breakout-fact [query stage-number breakout-index breakout]
   (let [column        (lib/breakout-column query stage-number breakout)

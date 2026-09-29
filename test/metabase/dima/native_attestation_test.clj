@@ -310,8 +310,25 @@
       (is (= 3 (count expanded-facts)))
       (is (= exact-before (#'dima.attestation/exact-serialized-query mixed)))
       (is (= fingerprint (dima.attestation/exact-query-fingerprint mixed)))
-      ;; Metabase produced a legal, stable query; the RED is the explicit bounded
-      ;; attestation capability rather than Product-side metric algebra.
+      ;; Metabase produced a legal, stable query. Dima may accept the one-to-one
+      ;; expansion only because occurrence identity is preserved and the non-metric
+      ;; aggregation facts stay unchanged.
+      (is (= expanded-facts
+             (#'dima.attestation/attested-aggregation-facts
+              mixed observed refs))))))
+
+(deftest mixed-native-metric-expansion-rejects-non-metric-drift-test
+  (testing "native metric expansion cannot mask a changed non-metric aggregation"
+    (let [{:keys [query]} (metric-probe-query (fn [_] (lib/count)))
+          mp              (mt/metadata-provider)
+          quantity        (lib.metadata/field mp (mt/id :orders :quantity))
+          mixed           (-> query
+                              (lib/aggregate (lib/count))
+                              (lib/aggregate (lib/sum quantity)))
+          refs            (#'dima.attestation/native-metric-references mixed)
+          observed        (-> (metric-observation-view mixed)
+                              (lib/remove-clause (nth (lib/aggregations (metric-observation-view mixed)) 2))
+                              (lib/aggregate (lib/max quantity)))]
       (is (= "NATIVE_METRIC_EXPANSION_UNSUPPORTED"
              (exception-code
               #(#'dima.attestation/attested-aggregation-facts
