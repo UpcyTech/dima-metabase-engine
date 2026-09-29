@@ -2,6 +2,7 @@
   (:require
    [clojure.test :refer :all]
    [metabase.dima.native-attestation :as dima.attestation]
+   [metabase.dima.native-material-observation :as dima.material]
    [metabase.lib.core :as lib]
    [metabase.lib.metadata :as lib.metadata]
    [metabase.metabot.persistence :as metabot.persistence]
@@ -60,6 +61,11 @@
          (mt/client :post 401
                     "dima/engine/v1/native-query-attestation"
                     {:conversation_id (str (random-uuid))
+                     :native_query_id "q"})))
+  (is (= "Unauthenticated"
+         (mt/client :post 401
+                    "dima/engine/v1/native-query-material-observation"
+                    {:conversation_id (str (random-uuid))
                      :native_query_id "q"}))))
 
 (deftest engine-identity-endpoint-returns-exact-dima-identity-test
@@ -108,6 +114,55 @@
            {:conversation_id convo-id
             :native_query_id query-id
             :unexpected "not-accepted"}))))))
+
+
+(deftest native-query-material-observation-api-accepts-only-occurrence-locators-test
+  (let [convo-id (str (random-uuid))
+        query-id "material-q"
+        response {:schema_version "dima_native_material_observation_v1"
+                  :conversation_id convo-id
+                  :native_query_id query-id
+                  :assistant_message_id 17
+                  :tool_call_id "call-material"
+                  :query_fingerprint (apply str (repeat 64 "a"))
+                  :authenticated_metabase_subject 7
+                  :database_id 1
+                  :runtime_identity test-runtime
+                  :native_metrics []
+                  :dimensions []
+                  :filters []
+                  :temporal_scopes []
+                  :ranking []}
+        calls (atom [])]
+    (with-redefs [dima.material/observe-native-query-material!
+                  (fn [locator]
+                    (swap! calls conj locator)
+                    response)]
+      (is (= response
+             (mt/user-http-request
+              :rasta
+              :post
+              200
+              "dima/engine/v1/native-query-material-observation"
+              {:conversation_id convo-id
+               :native_query_id query-id})))
+      (is (= [{:conversation_id (java.util.UUID/fromString convo-id)
+               :native_query_id query-id}]
+             @calls))
+      (testing "caller query/business expectations are rejected at the raw boundary"
+        (doseq [extra [{:query {:database 1}}
+                       {:expected_metric "sales_count"}
+                       {:expected_dates ["2026-06-01" "2026-07-01"]}
+                       {:scope_version "scope_v1"}
+                       {:benchmark_id "case-1"}]]
+          (mt/user-http-request
+           :rasta
+           :post
+           400
+           "dima/engine/v1/native-query-material-observation"
+           (merge {:conversation_id convo-id
+                   :native_query_id query-id}
+                  extra)))))))
 
 (deftest participant-and-superuser-cannot-use-official-v1-attestation-test
   (mt/test-driver :h2
