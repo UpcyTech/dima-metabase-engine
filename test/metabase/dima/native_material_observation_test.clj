@@ -152,6 +152,16 @@
         (lib/filter (lib/>= date-col "2026-06-01"))
         (lib/filter (lib/< date-col "2026-07-01")))))
 
+(defn- r8-timestamp-string-query []
+  ;; Exact literal class observed in paid Panel A after Metabase persisted the
+  ;; accepted May+June scope.
+  (let [mp (mt/metadata-provider)
+        date-col (lib.metadata/field mp (mt/id :checkins :date))]
+    (-> (lib/query mp (lib.metadata/table mp (mt/id :checkins)))
+        (lib/aggregate (lib/count))
+        (lib/filter (lib/>= date-col "2026-05-01T00:00:00"))
+        (lib/filter (lib/< date-col "2026-07-01T00:00:00")))))
+
 (deftest neutral-occurrence-owner-preserves-subject-and-exact-fingerprint-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
@@ -272,6 +282,29 @@
           (is (= expected (:temporal_scopes a)))
           (is (= expected (:temporal_scopes b)))
           (is (= (:temporal_scopes a) (:temporal_scopes b))))))))
+
+(deftest r8-paid-a-timestamp-literal-material-observation-equivalent-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "r8-paid-a-temporal-literal"
+          query (dima.occurrence/exact-serialized-query
+                 (r8-timestamp-string-query))]
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id
+                        :query-id query-id
+                        :query query
+                        :user-id owner-id})
+        (let [out (observe! convo-id query-id)]
+          (is (= "dima_native_material_observation_v1"
+                 (:schema_version out)))
+          (is (= [{:time_field_id (mt/id :checkins :date)
+                   :table_id (mt/id :checkins)
+                   :lower_bound "2026-05-01T00:00:00"
+                   :lower_inclusive true
+                   :upper_bound "2026-07-01T00:00:00"
+                   :upper_inclusive false}]
+                 (:temporal_scopes out))))))))
 
 (deftest r5-observer-succeeds-while-p13-microscope-remains-strict-test
   (mt/test-driver :h2
