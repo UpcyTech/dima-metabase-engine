@@ -269,6 +269,32 @@
                               (= (mt/id :orders :user_id) (:field_id %)))
                         (:dimensions out))))))))))
 
+(deftest r6-unsupported-ranking-target-fails-closed-as-typed-422-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "unsupported-ranking-target"
+          mp       (mt/metadata-provider)
+          base     (lib/aggregate
+                    (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                    (lib/count))
+          ranked   (-> base
+                       (lib/order-by (lib/aggregation-ref base 0) :desc)
+                       (lib/limit 5))]
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id
+                        :query-id query-id
+                        :query ranked
+                        :user-id owner-id})
+        (with-redefs [lib/orderable-columns (fn [& _] [])]
+          (try
+            (observe! convo-id query-id)
+            (is false "unsupported ranking target must fail closed")
+            (catch clojure.lang.ExceptionInfo e
+              (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                     (:dima/error-code (ex-data e))))
+              (is (= 422 (:status-code (ex-data e)))))))))))
+
 (deftest r5-production-observer-has-executable-zero-p13-and-zero-execution-dependency-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)

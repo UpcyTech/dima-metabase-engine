@@ -2,7 +2,7 @@ name: dima-engine-r5-focused
 
 on:
   push:
-    branches: [feat/r5-material-observation]
+    branches: [feat/r5-material-observation, fix/r6-ranking-fail-closed]
     paths:
       - "src/metabase/dima/**"
       - "test/metabase/dima/**"
