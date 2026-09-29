@@ -1,0 +1,42 @@
+name: dima-engine-r5-focused
+
+on:
+  push:
+    branches: [feat/r5-material-observation]
+    paths:
+      - "src/metabase/dima/**"
+      - "test/metabase/dima/**"
+      - "src/metabase/api_routes/routes.clj"
+      - ".github/workflows/dima-engine-r5-focused.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_SHA: ${{ github.sha }}
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          fetch-depth: 1
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run R5 Dima engine tests
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-attestation-test metabase.dima.native-material-observation-test metabase.dima.api-test]'
+
+      - name: Require R5 namespaces
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.dima.native-occurrence 'metabase.dima.native-attestation 'metabase.dima.native-material-observation 'metabase.dima.api)"
