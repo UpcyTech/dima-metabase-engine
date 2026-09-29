@@ -877,6 +877,95 @@
                 (is (= fingerprint
                        (dima.attestation/exact-query-fingerprint exact_serialized_pmbql)))))))))))
 
+
+(deftest persisted-absolute-date-occurrence-attests-losslessly-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "absolute-date-q"
+          mp       (mt/metadata-provider)
+          date-col (lib.metadata/field mp (mt/id :checkins :date))
+          lower    [:absolute-datetime
+                    {:lib/uuid "00000000-0000-4000-8000-000000000081"
+                     :base-type :type/Date}
+                    "2026-05-01"
+                    :day]
+          upper    [:absolute-datetime
+                    {:lib/uuid "00000000-0000-4000-8000-000000000082"
+                     :base-type :type/Date}
+                    "2026-07-01"
+                    :day]
+          query    (-> (lib/query mp (lib.metadata/table mp (mt/id :checkins)))
+                       (lib/aggregate (lib/count))
+                       (lib/filter (lib/>= date-col lower))
+                       (lib/filter (lib/< date-col upper)))
+          exact    (#'dima.attestation/exact-serialized-query query)
+          fingerprint (dima.attestation/exact-query-fingerprint query)]
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id
+                        :query-id query-id
+                        :query query
+                        :user-id owner-id})
+        (binding [dima.attestation/*runtime-identity-override* test-runtime]
+          (let [{:keys [exact_serialized_pmbql manifest]}
+                (dima.attestation/attest-native-query!
+                 {:conversation_id (java.util.UUID/fromString convo-id)
+                  :native_query_id query-id})]
+            (is (= exact exact_serialized_pmbql))
+            (is (= fingerprint (:exact_pmbql_fingerprint manifest)))
+            (is (= 2 (:material_filter_count manifest)))
+            (is (= 2 (count (:temporal_predicates manifest))))
+            (is (some #(= "2026-05-01" (:lower_bound %))
+                      (:temporal_predicates manifest)))
+            (is (some #(= "2026-07-01" (:upper_bound %))
+                      (:temporal_predicates manifest)))))))))
+
+(deftest persisted-mixed-native-metric-occurrence-attests-exactly-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "mixed-native-metric-q"
+          definition (count-star-query)]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "Dima Mixed Native Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [mp       (mt/metadata-provider)
+              orders   (lib.metadata/table mp (mt/id :orders))
+              quantity (lib.metadata/field mp (mt/id :orders :quantity))
+              query    (-> (lib/query mp orders)
+                           (lib/aggregate (lib.metadata/metric mp metric-id))
+                           (lib/aggregate (lib/count))
+                           (lib/aggregate (lib/sum quantity)))
+              exact    (#'dima.attestation/exact-serialized-query query)
+              fingerprint (dima.attestation/exact-query-fingerprint query)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (binding [dima.attestation/*runtime-identity-override* test-runtime]
+              (let [{:keys [exact_serialized_pmbql manifest]}
+                    (dima.attestation/attest-native-query!
+                     {:conversation_id (java.util.UUID/fromString convo-id)
+                      :native_query_id query-id})]
+                (is (= exact exact_serialized_pmbql))
+                (is (= fingerprint (:exact_pmbql_fingerprint manifest)))
+                (is (= 3 (:aggregation_count manifest)))
+                (is (= 3 (count (:aggregations manifest))))
+                (is (= [{:stage_number 0
+                         :aggregation_index 0
+                         :metabase_metric_id metric-id
+                         :metabase_metric_entity_id metric-entity-id}]
+                       (:native_metric_references manifest)))
+                (is (= "count" (:operator (nth (:aggregations manifest) 0))))
+                (is (= "count" (:operator (nth (:aggregations manifest) 1))))
+                (is (= "sum" (:operator (nth (:aggregations manifest) 2))))))))))))
+
 (deftest native-metric-expanded-count-field-is-not-count-star-test
   (let [{:keys [query]}
         (metric-probe-query
