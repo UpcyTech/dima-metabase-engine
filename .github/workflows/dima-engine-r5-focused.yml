@@ -2,7 +2,7 @@ name: dima-engine-r5-focused
 
 on:
   push:
-    branches: [feat/r5-material-observation, fix/r8-material-observation-error-contract]
+    branches: [feat/r5-material-observation]
     paths:
       - "src/metabase/dima/**"
       - "test/metabase/dima/**"
