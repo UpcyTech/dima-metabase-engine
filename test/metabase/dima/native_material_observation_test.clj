@@ -30,6 +30,65 @@
        (catch clojure.lang.ExceptionInfo e
          (:dima/error-code (ex-data e)))))
 
+(defn- thrown-value [f]
+  (try
+    (f)
+    nil
+    (catch Throwable t
+      t)))
+
+(deftest r8-material-observation-fail-helper-supports-typed-2-3-4-arity-test
+  (let [fail-var (ns-resolve 'metabase.dima.native-material-observation 'fail!)
+        cases [{:args ["R8_TWO" "two"]
+                :status 422
+                :data nil}
+               {:args ["R8_THREE" "three" {:probe "r8"}]
+                :status 422
+                :data {:probe "r8"}}
+               {:args ["R8_FOUR" 409 "four" {:probe "r8-explicit"}]
+                :status 409
+                :data {:probe "r8-explicit"}}]]
+    (is (some? fail-var))
+    (doseq [{:keys [args status data]} cases]
+      (let [thrown (thrown-value #(apply fail-var args))]
+        (is (instance? clojure.lang.ExceptionInfo thrown)
+            (str "fail! must throw typed ExceptionInfo for arity " (count args)
+                 ", got " (some-> thrown class .getName)))
+        (when (instance? clojure.lang.ExceptionInfo thrown)
+          (is (= status (:status-code (ex-data thrown))))
+          (is (= (first args) (:dima/error-code (ex-data thrown))))
+          (doseq [[k v] data]
+            (is (= v (get (ex-data thrown) k)))))))))
+
+(deftest r8-current-three-argument-fail-paths-do-not-leak-arity-exception-test
+  (let [merge-bound-var
+        (ns-resolve 'metabase.dima.native-material-observation 'merge-bound)
+        temporal-predicate-var
+        (ns-resolve 'metabase.dima.native-material-observation 'temporal-predicate->scope)
+        cases [{:code "NATIVE_MATERIAL_TEMPORAL_SCOPE_AMBIGUOUS"
+                :thunk #(merge-bound-var
+                         {:time_field_id 7
+                          :lower_bound "2026-06-01"
+                          :lower_inclusive true}
+                         :lower
+                         "2026-06-15"
+                         true)}
+               {:code "NATIVE_MATERIAL_TEMPORAL_OPERATOR_UNSUPPORTED"
+                :thunk #(temporal-predicate-var
+                         {:time_field_id 7}
+                         {:operator "during"
+                          :values ["2026-06-01" "2026-07-01"]})}]]
+    (is (some? merge-bound-var))
+    (is (some? temporal-predicate-var))
+    (doseq [{:keys [code thunk]} cases]
+      (let [thrown (thrown-value thunk)]
+        (is (instance? clojure.lang.ExceptionInfo thrown)
+            (str code " must be typed ExceptionInfo, got "
+                 (some-> thrown class .getName)))
+        (when (instance? clojure.lang.ExceptionInfo thrown)
+          (is (= code (:dima/error-code (ex-data thrown))))
+          (is (= 422 (:status-code (ex-data thrown)))))))))
+
 (defn- tool-parts
   [{:keys [query-id query call-id producer]
     :or {call-id "tool-r5-1" producer "construct_notebook_query"}}]
