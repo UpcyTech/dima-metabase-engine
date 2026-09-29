@@ -16,6 +16,8 @@
 (defn- fail!
   ([code message]
    (fail! code 422 message nil))
+  ([code message data]
+   (fail! code 422 message data))
   ([code status message data]
    (throw (ex-info message
                    (merge {:status-code status
