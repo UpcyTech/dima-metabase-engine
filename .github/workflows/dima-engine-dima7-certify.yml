@@ -36,7 +36,7 @@ jobs:
         uses: ./.github/actions/prepare-backend
         with:
           java-version: "25"
-      - name: Run bounded Dima dima.6 tests
+      - name: Run bounded Dima dima.7 tests
         run: >-
           clojure -X:dev:ci:test:oss:oss-dev
           :only '[metabase.dima.native-attestation-test
@@ -65,6 +65,9 @@ jobs:
       - name: Prove bounded upstream patch surface
         run: |
           set -euo pipefail
+          git cat-file -e "$UPSTREAM_SHA^{commit}" 2>/dev/null || \
+            git fetch --no-tags --depth=1 origin "$UPSTREAM_SHA"
+          git cat-file -e "$UPSTREAM_SHA^{commit}"
           mkdir -p .dima/reports/certify
           python .dima/tools/patch_surface.py \
             --base "$UPSTREAM_SHA" \
