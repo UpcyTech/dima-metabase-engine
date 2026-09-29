@@ -7,8 +7,8 @@
   },
   "engine": {
     "repository": "UpcyTech/dima-metabase-engine",
-    "revision": 7,
-    "version": "0.63.18-dima.7",
+    "revision": 8,
+    "version": "0.63.18-dima.8",
     "semantic_behavior_changes": 0
   },
   "policy": {
