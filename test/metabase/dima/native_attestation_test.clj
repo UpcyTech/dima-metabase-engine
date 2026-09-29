@@ -253,8 +253,8 @@
                (dima.attestation/exact-query-fingerprint query)))))))
 
 
-(deftest absolute-date-runtime-compatibility-owner-reproduction-test
-  (testing "legal absolute Date pMBQL is narrower than the current Dima runtime compatibility codec"
+(deftest absolute-date-runtime-compatibility-lossless-hydration-test
+  (testing "legal absolute Date pMBQL hydrates losslessly without changing serialized authority"
     (let [mp       meta/metadata-provider
           date-col (lib.metadata/field mp (meta/id :checkins :date))
           absolute [:absolute-datetime
@@ -279,10 +279,17 @@
       (is (some? absolute-wire))
       (is (= "2026-06-01" (nth absolute-wire 2)))
       (is (contains? #{"day" :day} (nth absolute-wire 3)))
-      ;; Current dima.6 incorrectly requires every string in an absolute-datetime
-      ;; literal slot to parse as LocalDateTime.
-      (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
-             (exception-code #(dima.compat/hydrate-runtime-query! query)))))))
+      (let [hydrated (dima.compat/hydrate-runtime-query! query)
+            hydrated-absolute
+            (some
+             (fn [node]
+               (when (and (vector? node)
+                          (contains? #{"absolute-datetime" :absolute-datetime}
+                                     (first node)))
+                 node))
+             (tree-seq coll? seq hydrated))]
+        (is (instance? java.time.LocalDate (nth hydrated-absolute 2)))
+        (is (= exact (#'dima.attestation/exact-serialized-query hydrated))))))))
 
 (deftest mixed-native-metric-aggregation-capability-owner-reproduction-test
   (testing "one governed native metric can coexist with other legal aggregations beyond the dima.6 attestation bound"
