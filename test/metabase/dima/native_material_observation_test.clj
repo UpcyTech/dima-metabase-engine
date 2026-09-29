@@ -179,7 +179,7 @@
   (mt/test-driver :h2
     (let [owner-id  (mt/user->id :rasta)
           source    (metabase-absolute-date-source-query)
-          persisted (v3-persisted-absolute-date-query)]
+          persisted (dima.occurrence/exact-serialized-query source)]
       (mt/with-current-user owner-id
         (let [result (qp/process-query
                       (qp/userland-query-with-default-constraints source))]
