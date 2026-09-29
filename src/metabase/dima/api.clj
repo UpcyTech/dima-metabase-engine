@@ -7,6 +7,7 @@
    [metabase.api.common :as api]
    [metabase.api.macros :as api.macros]
    [metabase.dima.native-attestation :as dima.attestation]
+   [metabase.dima.native-material-observation :as dima.material]
    [metabase.dima.native-execution :as dima.execution]
    [metabase.util.malli.schema :as ms])
   (:import
@@ -119,6 +120,71 @@
    [:exact_serialized_pmbql :map]
    [:manifest NativeExecutionManifest]])
 
+(def ^:private NativeMaterialMetric
+  [:map
+   [:stage_number ms/IntGreaterThanOrEqualToZero]
+   [:aggregation_index ms/IntGreaterThanOrEqualToZero]
+   [:metabase_metric_id ms/PositiveInt]
+   [:metabase_metric_entity_id ms/NonBlankString]])
+
+(def ^:private NativeMaterialDimension
+  [:map
+   [:stage_number ms/IntGreaterThanOrEqualToZero]
+   [:role [:enum "breakout" "filter" "ranking" "temporal"]]
+   [:field_id ms/PositiveInt]
+   [:table_id {:optional true} ms/PositiveInt]
+   [:temporal_grain {:optional true} ms/NonBlankString]])
+
+(def ^:private NativeMaterialFilter
+  [:map
+   [:stage_number ms/IntGreaterThanOrEqualToZero]
+   [:operator ms/NonBlankString]
+   [:values [:sequential :any]]
+   [:field_id ms/PositiveInt]
+   [:table_id {:optional true} ms/PositiveInt]])
+
+(def ^:private NativeMaterialTemporalScope
+  [:map
+   [:time_field_id ms/PositiveInt]
+   [:table_id {:optional true} ms/PositiveInt]
+   [:lower_bound {:optional true} :any]
+   [:lower_inclusive {:optional true} :boolean]
+   [:upper_bound {:optional true} :any]
+   [:upper_inclusive {:optional true} :boolean]])
+
+(def ^:private NativeMaterialRankingTarget
+  [:map
+   [:kind [:enum "metric" "field"]]
+   [:metabase_metric_id {:optional true} ms/PositiveInt]
+   [:metabase_metric_entity_id {:optional true} ms/NonBlankString]
+   [:field_id {:optional true} ms/PositiveInt]
+   [:table_id {:optional true} ms/PositiveInt]])
+
+(def ^:private NativeMaterialRanking
+  [:map
+   [:stage_number ms/IntGreaterThanOrEqualToZero]
+   [:order_index ms/IntGreaterThanOrEqualToZero]
+   [:target NativeMaterialRankingTarget]
+   [:direction [:enum "asc" "desc"]]
+   [:limit {:optional true} ms/IntGreaterThanOrEqualToZero]])
+
+(def ^:private NativeMaterialObservationResponse
+  [:map
+   [:schema_version [:= "dima_native_material_observation_v1"]]
+   [:conversation_id ms/UUIDString]
+   [:native_query_id ms/NonBlankString]
+   [:assistant_message_id ms/PositiveInt]
+   [:tool_call_id ms/NonBlankString]
+   [:query_fingerprint [:re #"^[0-9a-f]{64}$"]]
+   [:authenticated_metabase_subject ms/PositiveInt]
+   [:database_id ms/PositiveInt]
+   [:runtime_identity RuntimeIdentityResponse]
+   [:native_metrics [:sequential NativeMaterialMetric]]
+   [:dimensions [:sequential NativeMaterialDimension]]
+   [:filters [:sequential NativeMaterialFilter]]
+   [:temporal_scopes [:sequential NativeMaterialTemporalScope]]
+   [:ranking [:sequential NativeMaterialRanking]]])
+
 (def ^:private NativeQueryExecutionResponse
   [:map
    [:native_conversation_id ms/UUIDString]
@@ -159,6 +225,22 @@
   (check-no-dropped-entries! (:body request) body)
   (let [{:keys [conversation_id native_query_id]} body]
     (dima.attestation/attest-native-query!
+     {:conversation_id (UUID/fromString conversation_id)
+      :native_query_id native_query_id})))
+
+
+(api.macros/defendpoint :post "/engine/v1/native-query-material-observation" :- NativeMaterialObservationResponse
+  "Observe representation-independent material semantics for one persisted native query occurrence."
+  [_route-params
+   _query-params
+   body
+   :- [:map {:closed true}
+       [:conversation_id ms/UUIDString]
+       [:native_query_id ms/NonBlankString]]
+   request]
+  (check-no-dropped-entries! (:body request) body)
+  (let [{:keys [conversation_id native_query_id]} body]
+    (dima.material/observe-native-query-material!
      {:conversation_id (UUID/fromString conversation_id)
       :native_query_id native_query_id})))
 
