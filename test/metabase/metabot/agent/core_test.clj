@@ -8,6 +8,7 @@
    [metabase.lib.test-metadata :as meta]
    [metabase.metabot.agent.core :as agent]
    [metabase.metabot.agent.memory :as memory]
+   [metabase.metabot.agent.profiles :as profiles]
    [metabase.metabot.persistence :as metabot.persistence]
    [metabase.metabot.self :as self]
    [metabase.metabot.self.openrouter :as openrouter]
@@ -79,6 +80,128 @@
       (is (not (#'agent/terminal-tool-call? #{} success))))
     (testing "finish-reason reports :terminal-tool"
       (is (= :terminal-tool (#'agent/finish-reason 0 20 terminal success))))))
+
+
+(defn- dima9-notebook-tool-parts
+  [result]
+  [{:type :tool-input
+    :id "dima9-q"
+    :function "construct_notebook_query"}
+   {:type :tool-output
+    :id "dima9-q"
+    :result result}])
+
+(deftest dima9-nlq-terminal-tool-contract-test
+  (let [terminal (:terminal-tools (profiles/get-profile :nlq))
+        success  (dima9-notebook-tool-parts
+                  {:output "ok"
+                   :structured-output
+                   {:query-id "q-dima9"
+                    :query {:database 1 :type :query :query {}}
+                    :title "Downtime by month"
+                    :visualization {:type "line"}}})
+        failure  (dima9-notebook-tool-parts
+                  {:output "query validation failed"})
+        preparatory
+        [{:type :tool-input :id "prep" :function "read_resource"}
+         {:type :tool-output :id "prep"
+          :result {:output "ok" :structured-output {:resource "metric"}}}]]
+    (testing "successful construct_notebook_query is terminal"
+      (is (#'agent/terminal-tool-call? terminal success))
+      (is (not (#'agent/should-continue? 7 10 terminal success)))
+      (is (= :terminal-tool (#'agent/finish-reason 7 10 terminal success))))
+    (testing "failed construct_notebook_query remains retryable"
+      (is (not (#'agent/terminal-tool-call? terminal failure)))
+      (is (#'agent/should-continue? 7 10 terminal failure)))
+    (testing "preparatory tools remain nonterminal"
+      (is (not (#'agent/terminal-tool-call? terminal preparatory)))
+      (is (#'agent/should-continue? 1 10 terminal preparatory)))
+    (testing "terminal structured output remains intact"
+      (is (= "Downtime by month"
+             (get-in success [1 :result :structured-output :title])))
+      (is (= {:type "line"}
+             (get-in success [1 :result :structured-output :visualization]))))))
+
+(defn- dima9-external-count-query
+  [table-name]
+  {:reasoning "Build one governed notebook count query."
+   :query {:lib/type "mbql/query"
+           :database "Sample"
+           :stages [{:lib/type "mbql.stage/mbql"
+                     :source-table ["Sample" "PUBLIC" table-name]
+                     :aggregation [["count" {}]]}]}
+   :title "Dima9 terminal query"})
+
+(deftest dima9-nlq-successful-construct-stops-before-next-provider-iteration-test
+  (mt/as-admin
+    (mt/with-temporary-setting-values [llm-metabot-provider test-provider]
+      (let [calls (atom 0)]
+        (mt/with-dynamic-fn-redefs
+          [openrouter/openrouter
+           (fn [_]
+             (case (swap! calls inc)
+               1
+               (mut/mock-llm-response
+                [{:type :tool-input
+                  :id "dima9-live-q"
+                  :function "construct_notebook_query"
+                  :arguments (dima9-external-count-query "ORDERS")}])
+               (throw
+                (ex-info
+                 "NLQ must not request another provider turn after successful construct"
+                 {:dima9/provider-call @calls}))))]
+          (let [parts
+                (into []
+                      (agent/run-agent-loop
+                       {:messages [{:role :user
+                                    :content "Count orders."}]
+                        :state {}
+                        :profile-id :nlq
+                        :context {}}))]
+            (is (= 1 @calls))
+            (is (some #(and (= :tool-output (:type %))
+                            (= "dima9-live-q" (:id %))
+                            (some? (get-in % [:result :structured-output :query-id])))
+                      parts))
+            (is (some #(= :data (:type %)) parts))))))))
+
+(deftest dima9-nlq-failed-construct-allows-one-repair-provider-iteration-test
+  (mt/as-admin
+    (mt/with-temporary-setting-values [llm-metabot-provider test-provider]
+      (let [calls (atom 0)]
+        (mt/with-dynamic-fn-redefs
+          [openrouter/openrouter
+           (fn [_]
+             (case (swap! calls inc)
+               1
+               (mut/mock-llm-response
+                [{:type :tool-input
+                  :id "dima9-bad-q"
+                  :function "construct_notebook_query"
+                  :arguments (dima9-external-count-query "DOES_NOT_EXIST")}])
+               2
+               (mut/mock-llm-response
+                [{:type :text :text "The first query could not be constructed."}])
+               (throw
+                (ex-info "unexpected extra repair iteration"
+                         {:dima9/provider-call @calls}))))]
+          (let [parts
+                (into []
+                      (agent/run-agent-loop
+                       {:messages [{:role :user
+                                    :content "Count a missing table."}]
+                        :state {}
+                        :profile-id :nlq
+                        :context {}}))]
+            (is (= 2 @calls))
+            (is (some #(and (= :tool-output (:type %))
+                            (= "dima9-bad-q" (:id %))
+                            (nil? (get-in % [:result :structured-output])))
+                      parts))
+            (is (some #(and (= :text (:type %))
+                            (= "The first query could not be constructed."
+                               (:text %)))
+                      parts))))))))
 
 (defn- tools-registered-for-request!
   ([capabilities] (tools-registered-for-request! :internal capabilities))
