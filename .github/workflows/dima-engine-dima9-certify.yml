@@ -92,10 +92,13 @@ jobs:
           import json
           from pathlib import Path
           p = json.loads(Path(".dima/reports/certify/DIMA_PATCH_SURFACE.json").read_text())
-          assert p["modified_preexisting_upstream_file_count"] == 2, p
+          assert p["modified_preexisting_upstream_file_count"] == 5, p
           assert set(p["modified_preexisting_upstream_files"]) == {
               "src/metabase/api_routes/routes.clj",
               "src/metabase/metabot/agent/profiles.clj",
+              "test/metabase/metabot/agent/core_test.clj",
+              "test/metabase/metabot/agent/profiles_test.clj",
+              "test/metabase/metabot/api_test.clj",
           }, p
           assert p["deleted_upstream_file_count"] == 0, p
           assert p["sync_conflict_count"] == 0, p
