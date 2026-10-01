@@ -176,6 +176,7 @@
   :prompt-template "natural-language-querying-only.selmer"
   :max-iterations  10
   :temperature     0.3
+  :terminal-tools  #{"construct_notebook_query"}
   :tools           [#'tools/retrieve-library-entities-tool
                     #'tools/read-resource-tool
                     #'tools/construct-notebook-query-tool
