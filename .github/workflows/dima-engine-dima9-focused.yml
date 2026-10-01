@@ -1,0 +1,37 @@
+name: dima-engine-dima9-focused
+
+on:
+  push:
+    branches:
+      - fix/dima9-nlq-terminal-query
+    paths:
+      - "src/metabase/metabot/agent/profiles.clj"
+      - "test/metabase/metabot/agent/profiles_test.clj"
+      - "test/metabase/metabot/agent/core_test.clj"
+      - "test/metabase/metabot/api_test.clj"
+      - "test/metabase/dima/native_attestation_test.clj"
+      - "test/metabase/dima/native_material_observation_test.clj"
+      - "test/metabase/dima/native_execution_test.clj"
+      - ".github/workflows/dima-engine-dima9-focused.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+      - name: Run dima.9 NLQ lifecycle source tests
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.metabot.agent.profiles-test
+                   metabase.metabot.agent.core-test]'
