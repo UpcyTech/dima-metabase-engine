@@ -1,0 +1,12 @@
+name: dima-ref-update-event-probe
+on:
+  push:
+    branches:
+      - probe/ref-update-event
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ref-update-event
