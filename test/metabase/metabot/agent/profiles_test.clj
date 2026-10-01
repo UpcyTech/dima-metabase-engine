@@ -255,9 +255,12 @@
   (testing "the document profile ends the turn on a constructed chart, not on schema collection"
     (is (= #{"document_construct_model_chart" "document_construct_sql_chart"}
            (:terminal-tools (profiles/get-profile :document-generate-content)))))
-  (testing "terminality is per-profile — profiles that share these tools don't inherit it"
+  (testing "the external :nlq profile ends only after a successful notebook query is constructed"
+    (is (= #{"construct_notebook_query"}
+           (:terminal-tools (profiles/get-profile :nlq)))))
+  (testing "terminality remains per profile"
     (is (nil? (:terminal-tools (profiles/get-profile :internal))))
-    (is (nil? (:terminal-tools (profiles/get-profile :nlq))))))
+    (is (nil? (:terminal-tools (profiles/get-profile :nlq-fallback))))))
 
 (deftest register-profile-validation-test
   (let [base {:name            :scratch
