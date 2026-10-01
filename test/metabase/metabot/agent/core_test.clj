@@ -122,80 +122,67 @@
       (is (= {:type "line"}
              (get-in success [1 :result :structured-output :visualization]))))))
 
-(defn- dima9-external-count-query
-  [table-name]
-  {:reasoning "Build one governed notebook count query."
-   :query {:lib/type "mbql/query"
-           :database "Sample"
-           :stages [{:lib/type "mbql.stage/mbql"
-                     :source-table ["Sample" "PUBLIC" table-name]
-                     :aggregation [["count" {}]]}]}
-   :title "Dima9 terminal query"})
-
 (deftest dima9-nlq-successful-construct-stops-before-next-provider-iteration-test
   (mt/as-admin
-    (mt/with-temporary-setting-values [llm-metabot-provider test-provider]
-      (let [calls (atom 0)]
-        (mt/with-dynamic-fn-redefs
-          [openrouter/openrouter
-           (fn [_]
-             (case (swap! calls inc)
-               1
-               (mut/mock-llm-response
-                [{:type :tool-input
-                  :id "dima9-live-q"
-                  :function "construct_notebook_query"
-                  :arguments (dima9-external-count-query "ORDERS")}])
-               (throw
-                (ex-info
-                 "NLQ must not request another provider turn after successful construct"
-                 {:dima9/provider-call @calls}))))]
+    (let [calls (atom 0)
+          success (dima9-notebook-tool-parts
+                   {:output "ok"
+                    :structured-output
+                    {:query-id "q-dima9"
+                     :query {:database 1 :type :query :query {}}
+                     :title "Dima9 terminal query"}})]
+      (with-redefs-fn
+        {#'agent/call-llm
+         (fn [& _]
+           (case (swap! calls inc)
+             1 success
+             (throw
+              (ex-info
+               "NLQ must not request another provider turn after successful construct"
+               {:dima9/provider-call @calls}))))}
+        (fn []
           (let [parts
                 (into []
                       (agent/run-agent-loop
                        {:messages [{:role :user
-                                    :content "Count orders."}]
+                                    :content "Build one governed query."}]
                         :state {}
                         :profile-id :nlq
                         :context {}}))]
             (is (= 1 @calls))
             (is (some #(and (= :tool-output (:type %))
-                            (= "dima9-live-q" (:id %))
+                            (= "dima9-q" (:id %))
                             (some? (get-in % [:result :structured-output :query-id])))
                       parts))
             (is (some #(= :data (:type %)) parts))))))))
 
 (deftest dima9-nlq-failed-construct-allows-one-repair-provider-iteration-test
   (mt/as-admin
-    (mt/with-temporary-setting-values [llm-metabot-provider test-provider]
-      (let [calls (atom 0)]
-        (mt/with-dynamic-fn-redefs
-          [openrouter/openrouter
-           (fn [_]
-             (case (swap! calls inc)
-               1
-               (mut/mock-llm-response
-                [{:type :tool-input
-                  :id "dima9-bad-q"
-                  :function "construct_notebook_query"
-                  :arguments (dima9-external-count-query "DOES_NOT_EXIST")}])
-               2
-               (mut/mock-llm-response
-                [{:type :text :text "The first query could not be constructed."}])
-               (throw
-                (ex-info "unexpected extra repair iteration"
-                         {:dima9/provider-call @calls}))))]
+    (let [calls (atom 0)
+          failure (dima9-notebook-tool-parts
+                   {:output "query validation failed"})]
+      (with-redefs-fn
+        {#'agent/call-llm
+         (fn [& _]
+           (case (swap! calls inc)
+             1 failure
+             2 [{:type :text
+                 :text "The first query could not be constructed."}]
+             (throw
+              (ex-info "unexpected extra repair iteration"
+                       {:dima9/provider-call @calls}))))}
+        (fn []
           (let [parts
                 (into []
                       (agent/run-agent-loop
                        {:messages [{:role :user
-                                    :content "Count a missing table."}]
+                                    :content "Build one governed query."}]
                         :state {}
                         :profile-id :nlq
                         :context {}}))]
             (is (= 2 @calls))
             (is (some #(and (= :tool-output (:type %))
-                            (= "dima9-bad-q" (:id %))
+                            (= "dima9-q" (:id %))
                             (nil? (get-in % [:result :structured-output])))
                       parts))
             (is (some #(and (= :text (:type %))
