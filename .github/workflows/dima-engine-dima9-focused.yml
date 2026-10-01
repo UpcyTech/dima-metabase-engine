@@ -9,29 +9,72 @@ on:
       - "test/metabase/metabot/agent/profiles_test.clj"
       - "test/metabase/metabot/agent/core_test.clj"
       - "test/metabase/metabot/api_test.clj"
-      - "test/metabase/dima/native_attestation_test.clj"
-      - "test/metabase/dima/native_material_observation_test.clj"
-      - "test/metabase/dima/native_execution_test.clj"
+      - "test/metabase/metabot/tools/construct_representations_test.clj"
+      - "src/metabase/dima/**"
+      - "test/metabase/dima/**"
       - ".github/workflows/dima-engine-dima9-focused.yml"
 
 permissions:
   contents: read
 
+env:
+  DIMA8_BASE_SHA: 0f16f2b5a1ec774ac7afee6214c726e82f9ceb3c
+
 jobs:
   focused:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 1
+          fetch-depth: 64
+      - name: Prove bounded dima.9 source surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$DIMA8_BASE_SHA^{commit}" 2>/dev/null ||             git fetch --no-tags --depth=1 origin "$DIMA8_BASE_SHA"
+          python - <<'PY'
+          import os, subprocess
+          base = os.environ["DIMA8_BASE_SHA"]
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", f"{base}..HEAD"],
+              text=True,
+          ).splitlines()
+          production = {
+              p for p in changed
+              if p.startswith("src/") or p.startswith("resources/")
+          }
+          assert production == {"src/metabase/metabot/agent/profiles.clj"}, production
+          assert "src/metabase/metabot/agent/core.clj" not in changed
+          assert not any(p.startswith("resources/metabot/prompts/") for p in changed)
+          print("production_source_diff=" + ",".join(sorted(production)))
+          print("agent_core_diff=0")
+          print("prompt_diff=0")
+          PY
       - name: Prepare backend
         uses: ./.github/actions/prepare-backend
         with:
           java-version: "25"
-      - name: Run dima.9 NLQ lifecycle source tests
+      - name: Run dima.9 NLQ lifecycle and occurrence family
         run: >-
           clojure -X:dev:ci:test:oss:oss-dev
           :only '[metabase.metabot.agent.profiles-test
-                   metabase.metabot.agent.core-test]'
+                   metabase.metabot.agent.core-test
+                   metabase.metabot.api-test
+                   metabase.metabot.tools.construct-representations-test
+                   metabase.dima.native-attestation-test
+                   metabase.dima.native-material-observation-test
+                   metabase.dima.api-test
+                   metabase.dima.native-execution-test
+                   metabase.dima.execution-api-contract-test]'
+      - name: Require lifecycle namespaces
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.metabot.agent.profiles
+                       'metabase.metabot.agent.core
+                       'metabase.metabot.api
+                       'metabase.dima.native-occurrence
+                       'metabase.dima.native-material-observation
+                       'metabase.dima.native-attestation
+                       'metabase.dima.native-execution)"
