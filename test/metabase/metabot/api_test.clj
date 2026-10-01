@@ -83,6 +83,7 @@
                             :data         [{:role "user" :content (:content question)}]}
                            {:total_tokens pos-int?
                             :role         :assistant
+                            :finished     true
                             :data         [{:type "text" :text "Hello from native agent!"}]}]
                           messages)))))))))))
 
