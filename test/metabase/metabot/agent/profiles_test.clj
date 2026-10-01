@@ -187,15 +187,21 @@
     (binding [scope/*current-user-scope* api-scope/unrestricted]
       (testing "entity retrieval AVAILABLE -> curated library tool, no general-search fallback"
         (mt/with-dynamic-fn-redefs [entity-retrieval/entity-retrieval-available? (constantly true)]
-          (let [tools (profiles/get-tools-for-profile :nlq [])]
+          (let [profile (profiles/get-profile :nlq)
+                tools   (profiles/get-tools-for-profile :nlq [])]
+            (is (= :nlq (:name profile)))
+            (is (= #{"construct_notebook_query"} (:terminal-tools profile)))
             (is (contains? tools "retrieve_library_entities")
                 "the curated library tool is offered when the index can serve queries")
             (is (not (contains? tools "search"))
                 "the general-search fallback is filtered out when the library is available")
             (is (contains? tools "construct_notebook_query")))))
-      (testing "entity retrieval UNAVAILABLE -> general-search fallback, no curated library tool"
+      (testing "entity retrieval UNAVAILABLE -> fallback tools while external profile identity/terminality stay :nlq"
         (mt/with-dynamic-fn-redefs [entity-retrieval/entity-retrieval-available? (constantly false)]
-          (let [tools (profiles/get-tools-for-profile :nlq [])]
+          (let [profile (profiles/get-profile :nlq)
+                tools   (profiles/get-tools-for-profile :nlq [])]
+            (is (= :nlq (:name profile)))
+            (is (= #{"construct_notebook_query"} (:terminal-tools profile)))
             (is (not (contains? tools "retrieve_library_entities"))
                 "the curated library tool is gated out when the index can't serve queries")
             (is (contains? tools "search")
