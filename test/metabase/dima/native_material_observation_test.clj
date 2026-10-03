@@ -361,6 +361,53 @@
                               (= (mt/id :orders :user_id) (:field_id %)))
                         (:dimensions out))))))))))
 
+(deftest r5-change-ranking-observability-contract-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "change-ranking-observability"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          created-at (lib.metadata/field mp0 (mt/id :orders :created_at))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Change Ranking Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [mp (mt/metadata-provider)
+              metric (lib.metadata/metric mp metric-id)
+              date-col (lib.metadata/field mp (mt/id :orders :created_at))
+              query0 (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                         (lib/breakout (lib/with-temporal-bucket date-col :month))
+                         (lib/aggregate metric)
+                         (lib/aggregate
+                          (lib/- metric (lib/offset metric -1))))
+              ranked (-> query0
+                         (lib/order-by (lib/aggregation-ref query0 1) :desc)
+                         (lib/limit 3))]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query ranked
+                            :user-id owner-id})
+            (let [out (observe! convo-id query-id)
+                  rank (first (:ranking out))]
+              ;; Independent observability law: a legal Metabase
+              ;; period-over-period derived ranking must be distinguishable
+              ;; from ordinary LEVEL ranking without executing the query.
+              (is (= "change" (:basis rank)))
+              (is (= "metric" (get-in rank [:target :kind])))
+              (is (= metric-id
+                     (get-in rank [:target :metabase_metric_id])))
+              (is (= metric-entity-id
+                     (get-in rank [:target :metabase_metric_entity_id]))))))))))
+
 (deftest r5-production-observer-has-executable-zero-p13-and-zero-execution-dependency-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
