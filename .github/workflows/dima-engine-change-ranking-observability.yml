@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - test/dima9-change-ranking-observability
+      - feat/dima11-conditional-change-observer
     paths:
       - "test/metabase/dima/native_material_observation_test.clj"
       - "src/metabase/dima/native_material_observation.clj"
