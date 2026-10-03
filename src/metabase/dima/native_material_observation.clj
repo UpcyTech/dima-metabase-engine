@@ -8,6 +8,8 @@
   (:require
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
+   [metabase.lib.expression :as lib.expression]
+   [metabase.lib.ref :as lib.ref]
    [metabase.types.core]
    [metabase.util.json :as json]))
 
@@ -305,25 +307,21 @@
                                 (:upper_bound comparison-window))))
         (:metric comparison)))))
 
-(defn- conditional-change-ranking-index
-  [query metric-observations]
-  (let [metric-by-source (metric-source-index query metric-observations)
-        periods (conditional-period-index query metric-by-source)]
-    (into {}
-          (mapcat
-           (fn [stage-number]
-             (keep-indexed
-              (fn [expression-index expression]
-                (let [parts (lib/expression-parts query stage-number expression)
-                      metric (adjacent-period-delta-metric parts periods)
-                      metadata (nth (or (lib/expressions-metadata query stage-number) [])
-                                    expression-index
-                                    nil)
-                      source-uuid (:lib/source-uuid metadata)]
-                  (when (and metric source-uuid)
-                    [[stage-number source-uuid] metric])))
-              (or (lib/expressions query stage-number) [])))
-           (stage-numbers query)))))
+(defn- conditional-change-ranking-metric
+  [query stage-number order-by conditional-periods]
+  (let [[_direction _options target-ref] order-by
+        expression-name (when (= :expression (lib/dispatch-value target-ref))
+                          (lib.ref/expression-ref-name target-ref))
+        definition (when expression-name
+                     (lib.expression/maybe-resolve-expression
+                      query stage-number expression-name))
+        parts (when definition
+                (lib/expression-parts query stage-number definition))]
+    ;; Expression names are only Metabase's query-local reference mechanism.
+    ;; CHANGE authority comes exclusively from the resolved Lib structure:
+    ;; same governed metric, adjacent half-open periods, comparison - baseline.
+    (when parts
+      (adjacent-period-delta-metric parts conditional-periods))))
 
 (defn- leading-temporal-breakout?
   [query stage-number]
@@ -473,7 +471,8 @@
        (remove :temporal)
        (mapv #(dissoc % :temporal))))
 
-(defn- ranking-observations [query metric-index change-index]
+(defn- ranking-observations
+  [query metric-index change-index conditional-periods]
   (vec
    (mapcat
     (fn [stage-number]
@@ -492,8 +491,12 @@
                  direction (:direction info)
                  source-key (when column
                               [stage-number (:lib/source-uuid column)])
-                 change-metric (when source-key
-                                 (get change-index source-key))
+                 conditional-change
+                 (conditional-change-ranking-metric
+                  query stage-number order-by conditional-periods)
+                 change-metric (or conditional-change
+                                   (when source-key
+                                     (get change-index source-key)))
                  metric (when source-key
                           (get metric-index source-key))
                  field-id (:id column)
@@ -559,11 +562,13 @@
         fingerprint     (dima.occurrence/exact-query-fingerprint original)
         metrics         (metric-observations original)
         metric-index    (metric-ranking-index original metrics)
-        change-index    (merge
-                         (change-ranking-index original)
-                         (conditional-change-ranking-index original metrics))
+        metric-by-source (metric-source-index original metrics)
+        conditional-periods
+        (conditional-period-index original metric-by-source)
+        change-index    (change-ranking-index original)
         filters         (filter-observations original)
-        ranking         (ranking-observations original metric-index change-index)
+        ranking         (ranking-observations
+                         original metric-index change-index conditional-periods)
         breakouts       (breakout-dimensions original)
         dimensions      (vec (distinct
                               (concat breakouts
