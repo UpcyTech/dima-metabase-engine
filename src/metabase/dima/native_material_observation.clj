@@ -9,7 +9,9 @@
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
    [metabase.types.core]
-   [metabase.util.json :as json]))
+   [metabase.util.json :as json])
+  (:import
+   (java.time Instant LocalDate LocalDateTime OffsetDateTime ZoneOffset)))
 
 (set! *warn-on-reflection* true)
 
@@ -165,6 +167,7 @@
         delta-id))))
 
 (declare change-ranking-metric)
+(declare scalar-leaves)
 
 (defn- scaled-change-metric
   [value]
@@ -191,6 +194,165 @@
       (delta-over-previous-metric value)
       (scaled-change-metric value)))
 
+(defn- temporal-order-instant
+  [value]
+  (let [text (str value)]
+    (or
+     (try
+       (Instant/parse text)
+       (catch Exception _ nil))
+     (try
+       (.toInstant (OffsetDateTime/parse text))
+       (catch Exception _ nil))
+     (try
+       (.toInstant (LocalDateTime/parse text) ZoneOffset/UTC)
+       (catch Exception _ nil))
+     (try
+       (-> (LocalDate/parse text)
+           (.atStartOfDay ZoneOffset/UTC)
+           .toInstant)
+       (catch Exception _ nil)))))
+
+(defn- single-scalar
+  [value]
+  (let [leaves (vec (scalar-leaves value))]
+    (when (= 1 (count leaves))
+      (first leaves))))
+
+(defn- half-open-temporal-interval
+  [predicate]
+  (when (expression-parts? predicate)
+    (let [clauses (if (= :and (:operator predicate))
+                    (:args predicate)
+                    [predicate])
+          bounds
+          (keep
+           (fn [clause]
+             (when (and (expression-parts? clause)
+                        (#{:>= :<} (:operator clause)))
+               (let [[column value & more] (:args clause)
+                     scalar (single-scalar value)
+                     instant (when (some? scalar)
+                               (temporal-order-instant scalar))]
+                 (when (and (empty? more)
+                            (map? column)
+                            (temporal-column? column)
+                            (pos-int? (:id column))
+                            instant)
+                   {:operator (:operator clause)
+                    :field_id (:id column)
+                    :table_id (:table-id column)
+                    :instant instant}))))
+           clauses)
+          identities (set (map (juxt :field_id :table_id) bounds))
+          lowers (filter #(= :>= (:operator %)) bounds)
+          uppers (filter #(= :< (:operator %)) bounds)]
+      (when (and (= (count clauses) (count bounds))
+                 (= 1 (count identities))
+                 (= 1 (count lowers))
+                 (= 1 (count uppers)))
+        (let [lower (:instant (first lowers))
+              upper (:instant (first uppers))
+              [field-id table-id] (first identities)]
+          (when (neg? (compare lower upper))
+            (cond-> {:time_field_id field-id
+                     :lower lower
+                     :upper upper}
+              (pos-int? table-id) (assoc :table_id table-id))))))))
+
+(defn- previous-stage-aggregation
+  [query stage-number column]
+  (when (and (pos? stage-number)
+             (map? column)
+             (= :source/previous-stage (:lib/source column))
+             (:lib/source-uuid column))
+    (let [previous-stage (dec stage-number)
+          source-uuid (:lib/source-uuid column)
+          aggregations (or (lib/aggregations query previous-stage) [])
+          metadata (or (lib/aggregations-metadata query previous-stage) [])]
+      (some
+       (fn [[aggregation column-metadata]]
+         (when (= source-uuid (:lib/source-uuid column-metadata))
+           {:stage_number previous-stage
+            :aggregation aggregation}))
+       (map vector aggregations metadata)))))
+
+(defn- previous-stage-governed-metric
+  [stage-number metric-index column]
+  (when (and (pos? stage-number)
+             (map? column)
+             (= :source/previous-stage (:lib/source column))
+             (:lib/source-uuid column))
+    (get metric-index [(dec stage-number) (:lib/source-uuid column)])))
+
+(defn- period-aggregate-observation
+  [query stage-number metric-index column]
+  (when-let [{aggregate-stage :stage_number
+              aggregation :aggregation}
+             (previous-stage-aggregation query stage-number column)]
+    (let [parts (lib/expression-parts query aggregate-stage aggregation)]
+      (when (and (expression-parts? parts)
+                 (= :sum-where (:operator parts)))
+        (let [[metric-column predicate & more] (:args parts)
+              metric (previous-stage-governed-metric
+                      aggregate-stage metric-index metric-column)
+              interval (half-open-temporal-interval predicate)]
+          (when (and (empty? more) metric interval)
+            {:metric metric
+             :interval interval}))))))
+
+(defn- same-temporal-axis?
+  [left right]
+  (= (select-keys (:interval left) [:time_field_id :table_id])
+     (select-keys (:interval right) [:time_field_id :table_id])))
+
+(defn- later-period?
+  [later earlier]
+  (let [later-lower (get-in later [:interval :lower])
+        earlier-lower (get-in earlier [:interval :lower])
+        earlier-upper (get-in earlier [:interval :upper])]
+    (and later-lower earlier-lower earlier-upper
+         (neg? (compare earlier-lower later-lower))
+         (not (pos? (compare earlier-upper later-lower))))))
+
+(defn- period-pair-change-metric
+  [query stage-number metric-index value]
+  (when (and (expression-parts? value)
+             (= :- (:operator value)))
+    (let [[comparison-ref baseline-ref & more] (:args value)
+          comparison (period-aggregate-observation
+                      query stage-number metric-index comparison-ref)
+          baseline (period-aggregate-observation
+                    query stage-number metric-index baseline-ref)]
+      (when (and (empty? more)
+                 comparison
+                 baseline
+                 (same-metric? (:metric comparison) (:metric baseline))
+                 (same-temporal-axis? comparison baseline)
+                 (later-period? comparison baseline))
+        (:metric comparison)))))
+
+(defn- period-pair-change-ranking-index
+  [query metric-index]
+  (into {}
+        (mapcat
+         (fn [stage-number]
+           (keep-indexed
+            (fn [expression-index expression]
+              (let [parts (lib/expression-parts query stage-number expression)
+                    metric (period-pair-change-metric
+                            query stage-number metric-index parts)
+                    metadata (nth (or (lib/expressions-metadata
+                                       query stage-number)
+                                      [])
+                                  expression-index
+                                  nil)
+                    source-uuid (:lib/source-uuid metadata)]
+                (when (and metric source-uuid)
+                  [[stage-number source-uuid] metric])))
+            (or (lib/expressions query stage-number) [])))
+         (stage-numbers query))))
+
 (defn- leading-temporal-breakout?
   [query stage-number]
   (when-let [breakout (first (or (lib/breakouts query stage-number) []))]
@@ -199,7 +361,7 @@
        (and (temporal-column? column)
             (lib/raw-temporal-bucket column))))))
 
-(defn- change-ranking-index
+(defn- offset-change-ranking-index
   [query]
   (into {}
         (mapcat
@@ -219,6 +381,11 @@
               (or (lib/aggregations query stage-number) []))))
          (stage-numbers query))))
 
+
+(defn- change-ranking-index
+  [query metric-index]
+  (merge (offset-change-ranking-index query)
+         (period-pair-change-ranking-index query metric-index)))
 (defn- breakout-dimensions [query]
   (vec
    (mapcat
@@ -425,7 +592,7 @@
         fingerprint     (dima.occurrence/exact-query-fingerprint original)
         metrics         (metric-observations original)
         metric-index    (metric-ranking-index original metrics)
-        change-index    (change-ranking-index original)
+        change-index    (change-ranking-index original metric-index)
         filters         (filter-observations original)
         ranking         (ranking-observations original metric-index change-index)
         breakouts       (breakout-dimensions original)
