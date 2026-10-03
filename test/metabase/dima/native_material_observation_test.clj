@@ -6,6 +6,7 @@
    [metabase.dima.native-material-observation :as dima.material]
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
+   [metabase.lib.expression :as lib.expression]
    [metabase.query-processor :as qp]
    [metabase.lib.metadata :as lib.metadata]
    [metabase.metabot.persistence :as metabot.persistence]
@@ -647,7 +648,29 @@
           :database_id (mt/id)
           :table_id (mt/id :orders)
           :dataset_query definition}]
-        (let [query (period-pair-derived-query metric-id lib/-)]
+        (let [query (period-pair-derived-query metric-id lib/-)
+              stage-number 2
+              order-by (first (lib/order-bys query stage-number))
+              target (nth order-by 2 nil)
+              resolved (when (and (vector? target)
+                                  (= :expression (first target)))
+                         (lib.expression/resolve-expression
+                          query stage-number (last target)))
+              resolved-parts (when resolved
+                               (lib/expression-parts
+                                query stage-number resolved))
+              stage1-aggregations (lib/aggregations query 1)
+              stage1-metadata (lib/aggregations-metadata query 1)
+              stage0-metadata (lib/aggregations-metadata query 0)]
+          (println "DIMA_PERIOD_PAIR_TRACE="
+                   (pr-str
+                    {:order-by order-by
+                     :target target
+                     :resolved resolved
+                     :resolved-parts resolved-parts
+                     :stage1-aggregations stage1-aggregations
+                     :stage1-metadata stage1-metadata
+                     :stage0-metadata stage0-metadata}))
           (mt/with-current-user owner-id
             (persist-turn! {:conversation-id convo-id
                             :query-id query-id
