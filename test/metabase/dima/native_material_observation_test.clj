@@ -364,90 +364,58 @@
 
 
 
+(defn- column-by
+  [columns predicate]
+  (first (filter predicate columns)))
+
 (defn- conditional-period-delta-query
   [metric-id]
-  {:database (mt/id)
-   :lib/type :mbql/query
-   :stages
-   [{:lib/type :mbql.stage/mbql
-     :source-table (mt/id :orders)
-     :aggregation
-     [[:metric {:lib/uuid "11111111-1111-4111-8111-111111111111"} metric-id]]
-     :breakout
-     [[:field {:base-type :type/Integer
-               :effective-type :type/Integer
-               :lib/uuid "11111111-1111-4111-8111-111111111112"}
-       (mt/id :orders :user_id)]
-      [:field {:base-type :type/DateTime
-               :effective-type :type/DateTime
-               :lib/uuid "11111111-1111-4111-8111-111111111113"}
-       (mt/id :orders :created_at)]]}
-    {:lib/type :mbql.stage/mbql
-     :aggregation
-     [[:sum-where
-       {:lib/uuid "22222222-2222-4222-8222-222222222221"}
-       [:field {:base-type :type/Float
-                :lib/uuid "22222222-2222-4222-8222-222222222222"}
-        "sum"]
-       [:and {:lib/uuid "22222222-2222-4222-8222-222222222223"}
-        [:>= {:lib/uuid "22222222-2222-4222-8222-222222222224"}
-         [:field {:base-type :type/DateTime
-                  :lib/uuid "22222222-2222-4222-8222-222222222225"}
-          "created_at"]
-         "2026-05-01T00:00:00"]
-        [:< {:lib/uuid "22222222-2222-4222-8222-222222222226"}
-         [:field {:base-type :type/DateTime
-                  :lib/uuid "22222222-2222-4222-8222-222222222227"}
-          "created_at"]
-         "2026-06-01T00:00:00"]]]
-      [:sum-where
-       {:lib/uuid "22222222-2222-4222-8222-222222222228"}
-       [:field {:base-type :type/Float
-                :lib/uuid "22222222-2222-4222-8222-222222222229"}
-        "sum"]
-       [:and {:lib/uuid "22222222-2222-4222-8222-222222222230"}
-        [:>= {:lib/uuid "22222222-2222-4222-8222-222222222231"}
-         [:field {:base-type :type/DateTime
-                  :lib/uuid "22222222-2222-4222-8222-222222222232"}
-          "created_at"]
-         "2026-06-01T00:00:00"]
-        [:< {:lib/uuid "22222222-2222-4222-8222-222222222233"}
-         [:field {:base-type :type/DateTime
-                  :lib/uuid "22222222-2222-4222-8222-222222222234"}
-          "created_at"]
-         "2026-07-01T00:00:00"]]]]
-     :breakout
-     [[:field {:base-type :type/Integer
-               :lib/uuid "22222222-2222-4222-8222-222222222235"}
-       "user_id"]]}
-    {:lib/type :mbql.stage/mbql
-     :expressions
-     [[:-
-       {:lib/expression-name "period_delta"
-        :lib/uuid "33333333-3333-4333-8333-333333333331"}
-       [:field {:base-type :type/Float
-                :lib/uuid "33333333-3333-4333-8333-333333333332"}
-        "sum_where_sum_2"]
-       [:field {:base-type :type/Float
-                :lib/uuid "33333333-3333-4333-8333-333333333333"}
-        "sum_where_sum"]]]
-     :fields
-     [[:field {:base-type :type/Integer
-               :lib/uuid "33333333-3333-4333-8333-333333333334"}
-       "user_id"]
-      [:field {:base-type :type/Float
-               :lib/uuid "33333333-3333-4333-8333-333333333335"}
-       "sum_where_sum"]
-      [:field {:base-type :type/Float
-               :lib/uuid "33333333-3333-4333-8333-333333333336"}
-       "sum_where_sum_2"]
-      [:expression {:lib/uuid "33333333-3333-4333-8333-333333333337"}
-       "period_delta"]]
-     :order-by
-     [[:desc
-       {:lib/uuid "33333333-3333-4333-8333-333333333338"}
-       [:expression {:lib/uuid "33333333-3333-4333-8333-333333333339"}
-        "period_delta"]]]}]})
+  (let [mp         (mt/metadata-provider)
+        table      (lib.metadata/table mp (mt/id :orders))
+        user-col   (lib.metadata/field mp (mt/id :orders :user_id))
+        date-col   (lib.metadata/field mp (mt/id :orders :created_at))
+        metric     (lib.metadata/metric mp metric-id)
+        q0         (-> (lib/query mp table)
+                       (lib/breakout user-col)
+                       (lib/breakout date-col)
+                       (lib/aggregate metric))
+        metric-src (:lib/source-uuid
+                    (first (lib/aggregations-metadata q0 0)))
+        q1-base    (lib/append-stage q0)
+        stage1-cols (lib/aggregable-columns q1-base 1 nil)
+        user1      (column-by stage1-cols
+                              #(= (mt/id :orders :user_id) (:id %)))
+        date1      (column-by stage1-cols
+                              #(= (mt/id :orders :created_at) (:id %)))
+        metric1    (column-by stage1-cols
+                              #(= metric-src (:lib/source-uuid %)))
+        may-start  (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
+        jun-start  (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
+        jul-start  (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
+        baseline   (lib/sum-where
+                    metric1
+                    (lib/and (lib/>= date1 may-start)
+                             (lib/< date1 jun-start)))
+        comparison (lib/sum-where
+                    metric1
+                    (lib/and (lib/>= date1 jun-start)
+                             (lib/< date1 jul-start)))
+        q1         (-> q1-base
+                       (lib/breakout 1 user1)
+                       (lib/aggregate 1 baseline)
+                       (lib/aggregate 1 comparison))
+        agg-meta   (vec (lib/aggregations-metadata q1 1))
+        baseline-src (:lib/source-uuid (nth agg-meta 0))
+        comparison-src (:lib/source-uuid (nth agg-meta 1))
+        q2-base    (lib/append-stage q1)
+        stage2-cols (lib/expressionable-columns q2-base 2 nil)
+        baseline2  (column-by stage2-cols
+                              #(= baseline-src (:lib/source-uuid %)))
+        comparison2 (column-by stage2-cols
+                               #(= comparison-src (:lib/source-uuid %)))
+        q2         (lib/expression q2-base 2 "period_delta"
+                                   (lib/- comparison2 baseline2))]
+    (lib/order-by q2 (lib/expression-ref q2 "period_delta") :desc)))
 
 (deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
   (mt/test-driver :h2
