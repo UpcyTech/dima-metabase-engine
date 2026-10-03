@@ -490,6 +490,48 @@
             (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
                    (exception-code #(observe! convo-id query-id))))))))))
 
+(deftest r5-change-ranking-with-temporal-breakout-not-first-remains-unsupported-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "change-ranking-temporal-breakout-not-first"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Ambiguous Change Ordering Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [mp (mt/metadata-provider)
+              metric (lib.metadata/metric mp metric-id)
+              category (lib.metadata/field mp (mt/id :orders :product_id))
+              date-col (lib.metadata/field mp (mt/id :orders :created_at))
+              query0 (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                         ;; Metabase Offset is row-relative. If time is not the
+                         ;; leading breakout, period-over-period meaning is not
+                         ;; structurally proven by the observer.
+                         (lib/breakout category)
+                         (lib/breakout (lib/with-temporal-bucket date-col :month))
+                         (lib/aggregate metric)
+                         (lib/aggregate
+                          (lib/- metric (lib/offset metric -1))))
+              ranked (-> query0
+                         (lib/order-by (lib/aggregation-ref query0 1) :desc)
+                         (lib/limit 3))]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query ranked
+                            :user-id owner-id})
+            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                   (exception-code #(observe! convo-id query-id))))))))))
+
 (deftest r5-non-change-derived-ranking-remains-unsupported-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
