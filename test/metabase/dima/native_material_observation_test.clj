@@ -392,14 +392,16 @@
         may-start  (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
         jun-start  (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
         jul-start  (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
-        baseline   (lib/sum-where
-                    metric1
-                    (lib/and (lib/>= date1 may-start)
-                             (lib/< date1 jun-start)))
-        comparison (lib/sum-where
-                    metric1
-                    (lib/and (lib/>= date1 jun-start)
-                             (lib/< date1 jul-start)))
+        baseline   (lib/fresh-uuids
+                    (lib/sum-where
+                     metric1
+                     (lib/and (lib/>= date1 may-start)
+                              (lib/< date1 jun-start))))
+        comparison (lib/fresh-uuids
+                    (lib/sum-where
+                     metric1
+                     (lib/and (lib/>= date1 jun-start)
+                              (lib/< date1 jul-start))))
         q1         (-> q1-base
                        (lib/breakout 1 user1)
                        (lib/aggregate 1 baseline)
