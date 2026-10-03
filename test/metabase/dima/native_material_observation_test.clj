@@ -946,6 +946,20 @@
                             :query-id query-id
                             :query query
                             :user-id owner-id})
+            (let [restored (:query (dima.occurrence/load-occurrence! convo-id query-id))]
+              (doseq [aggregation (or (lib/aggregations restored 1) [])]
+                (let [parts (lib/expression-parts restored 1 aggregation)]
+                  (when (= :sum-where (:operator parts))
+                    (let [[_measure predicate] (:args parts)
+                          predicate-parts (lib/expression-parts restored 1 predicate)
+                          [column literal] (:args predicate-parts)]
+                      (println "DIMA_EQ_TRACE"
+                               (pr-str {:predicate_operator (:operator predicate-parts)
+                                        :column (select-keys column [:id :table-id :lib/source :lib/source-uuid
+                                                                    :lib/desired-column-alias
+                                                                    :lib/original-temporal-unit])
+                                        :raw_bucket (lib/raw-temporal-bucket column)
+                                        :literal literal})))))))
             ;; Exact live structural family: month-bucketed previous-stage date,
             ;; one equality-selected aggregate per period, comparison - baseline,
             ;; then DESC ordering by the derived expression.
