@@ -227,6 +227,8 @@
              (:lib/source-uuid column))
     (get metric-index [(dec stage-number) (:lib/source-uuid column)])))
 
+(declare semantic-literal)
+
 (defn- mbql-clause?
   [value operator]
   (and (vector? value)
