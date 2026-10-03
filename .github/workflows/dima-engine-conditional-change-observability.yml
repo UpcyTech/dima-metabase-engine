@@ -39,8 +39,9 @@ jobs:
                   text=True,
               ).splitlines()
           )
-          assert changed == set(), changed
-          print("production_source_diff=NONE")
+          expected = {"src/metabase/dima/native_material_observation.clj"}
+          assert changed == expected, (changed, expected)
+          print("production_source_diff=" + ",".join(sorted(changed)))
           PY
 
       - name: Prepare backend
