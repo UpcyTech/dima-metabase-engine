@@ -8,6 +8,7 @@
   (:require
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
+   [metabase.lib.equality :as lib.equality]
    [metabase.lib.expression :as lib.expression]
    [metabase.types.core]
    [metabase.util.json :as json])
@@ -261,30 +262,45 @@
                      :upper upper}
               (pos-int? table-id) (assoc :table_id table-id))))))))
 
+(defn- matched-previous-stage-column
+  [query stage-number column candidates]
+  (when (and (pos? stage-number)
+             (map? column)
+             (= :source/previous-stage (:lib/source column))
+             (seq candidates))
+    (lib.equality/find-matching-column
+     query
+     (dec stage-number)
+     column
+     candidates)))
+
 (defn- previous-stage-aggregation
   [query stage-number column]
-  (when (and (pos? stage-number)
-             (map? column)
-             (= :source/previous-stage (:lib/source column))
-             (:lib/source-uuid column))
+  (when (pos? stage-number)
     (let [previous-stage (dec stage-number)
-          source-uuid (:lib/source-uuid column)
           aggregations (or (lib/aggregations query previous-stage) [])
-          metadata (or (lib/aggregations-metadata query previous-stage) [])]
-      (some
-       (fn [[aggregation column-metadata]]
-         (when (= source-uuid (:lib/source-uuid column-metadata))
-           {:stage_number previous-stage
-            :aggregation aggregation}))
-       (map vector aggregations metadata)))))
+          metadata (or (lib/aggregations-metadata query previous-stage) [])
+          matched (matched-previous-stage-column
+                   query stage-number column metadata)
+          source-uuid (:lib/source-uuid matched)]
+      (when source-uuid
+        (some
+         (fn [[aggregation column-metadata]]
+           (when (= source-uuid (:lib/source-uuid column-metadata))
+             {:stage_number previous-stage
+              :aggregation aggregation}))
+         (map vector aggregations metadata))))))
 
 (defn- previous-stage-governed-metric
-  [stage-number metric-index column]
-  (when (and (pos? stage-number)
-             (map? column)
-             (= :source/previous-stage (:lib/source column))
-             (:lib/source-uuid column))
-    (get metric-index [(dec stage-number) (:lib/source-uuid column)])))
+  [query stage-number metric-index column]
+  (when (pos? stage-number)
+    (let [previous-stage (dec stage-number)
+          metadata (or (lib/aggregations-metadata query previous-stage) [])
+          matched (matched-previous-stage-column
+                   query stage-number column metadata)
+          source-uuid (:lib/source-uuid matched)]
+      (when source-uuid
+        (get metric-index [previous-stage source-uuid])))))
 
 (defn- period-aggregate-observation
   [query stage-number metric-index column]
@@ -296,7 +312,7 @@
                  (= :sum-where (:operator parts)))
         (let [[metric-column predicate & more] (:args parts)
               metric (previous-stage-governed-metric
-                      aggregate-stage metric-index metric-column)
+                      query aggregate-stage metric-index metric-column)
               interval (half-open-temporal-interval predicate)]
           (when (and (empty? more) metric interval)
             {:metric metric
