@@ -260,7 +260,8 @@
     (let [[column value] (:args predicate)
           scalar (single-scalar value)
           bucket (when (map? column)
-                   (lib/raw-temporal-bucket column))
+                   (or (lib/raw-temporal-bucket column)
+                       (:inherited-temporal-unit column)))
           range (when (and scalar (= :month bucket))
                   (canonical-month-range scalar))]
       (when (and (map? column)
