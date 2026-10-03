@@ -1,0 +1,54 @@
+name: dima-engine-conditional-change-observability
+
+on:
+  push:
+    branches:
+      - test/dima10-conditional-period-delta-observability
+    paths:
+      - "test/metabase/dima/native_material_observation_test.clj"
+      - "src/metabase/dima/native_material_observation.clj"
+      - ".github/workflows/dima-engine-conditional-change-observability.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 8
+
+      - name: Prove exact dima.10 base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=468643040c74959ffaad6e378b110d5841567f7c
+          git cat-file -e "$BASE^{commit}" 2>/dev/null || \
+            git fetch --no-tags --depth=1 origin "$BASE"
+          git cat-file -e "$BASE^{commit}"
+          python - <<'PY'
+          import subprocess
+          base = "468643040c74959ffaad6e378b110d5841567f7c"
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**"],
+                  text=True,
+              ).splitlines()
+          )
+          assert changed == set(), changed
+          print("production_source_diff=NONE")
+          PY
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run conditional-period delta observer reproducer
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-material-observation-test]'
