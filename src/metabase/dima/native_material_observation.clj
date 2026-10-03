@@ -199,7 +199,7 @@
        (and (temporal-column? column)
             (lib/raw-temporal-bucket column))))))
 
-(defn- change-ranking-index
+(defn- offset-change-ranking-index
   [query]
   (into {}
         (mapcat
@@ -218,6 +218,151 @@
                     [[stage-number source-uuid] metric])))
               (or (lib/aggregations query stage-number) []))))
          (stage-numbers query))))
+
+(defn- previous-stage-metric
+  [metric-index stage-number column]
+  (when (and (pos? stage-number)
+             (map? column)
+             (= :source/previous-stage (:lib/source column))
+             (:lib/source-uuid column))
+    (get metric-index [(dec stage-number) (:lib/source-uuid column)])))
+
+(defn- mbql-clause?
+  [value operator]
+  (and (vector? value)
+       (= operator (first value))
+       (map? (second value))))
+
+(defn- temporal-window
+  "Return one structurally exact half-open temporal window from a nested
+  conditional aggregation predicate. Nested predicate interpretation is
+  intentionally strict: AND of exactly >= lower and < upper on one stable
+  temporal field. Anything else is not CHANGE evidence."
+  [query stage-number predicate]
+  (when (mbql-clause? predicate :and)
+    (let [children (vec (drop 2 predicate))]
+      (when (= 2 (count children))
+        (let [observations
+              (mapv
+               (fn [clause]
+                 (let [{:keys [operator column args]}
+                       (lib/filter-parts query stage-number clause)]
+                   (when (and operator
+                              column
+                              (temporal-column? column)
+                              (= 1 (count args)))
+                     {:operator operator
+                      :identity (column-identity column)
+                      :value (semantic-literal query stage-number (first args))})))
+               children)
+              lower (some #(when (= :>= (:operator %)) %) observations)
+              upper (some #(when (= :< (:operator %)) %) observations)]
+          (when (and (= 2 (count (filter some? observations)))
+                     lower
+                     upper
+                     (= (:identity lower) (:identity upper))
+                     (string? (:value lower))
+                     (string? (:value upper))
+                     (neg? (compare (:value lower) (:value upper))))
+            {:time_identity (:identity lower)
+             :lower (:value lower)
+             :upper (:value upper)}))))))
+
+(defn- conditional-period-aggregation-index
+  [query metric-index]
+  (into {}
+        (mapcat
+         (fn [stage-number]
+           (when (pos? stage-number)
+             (keep-indexed
+              (fn [aggregation-index aggregation]
+                (when (mbql-clause? aggregation :sum-where)
+                  (let [[input predicate & more] (drop 2 aggregation)
+                        input-parts (lib/expression-parts query stage-number input)
+                        metric (previous-stage-metric metric-index
+                                                      stage-number
+                                                      input-parts)
+                        window (when (empty? more)
+                                 (temporal-window query
+                                                  stage-number
+                                                  predicate))
+                        metadata (nth (or (lib/aggregations-metadata
+                                           query
+                                           stage-number)
+                                          [])
+                                      aggregation-index
+                                      nil)
+                        source-uuid (:lib/source-uuid metadata)]
+                    (when (and metric window source-uuid)
+                      [[stage-number source-uuid]
+                       {:metric metric :window window}]))))
+              (or (lib/aggregations query stage-number) []))))
+         (stage-numbers query))))
+
+(defn- window-strictly-before?
+  [earlier later]
+  (and earlier
+       later
+       (= (:time_identity earlier) (:time_identity later))
+       (not (pos? (compare (:upper earlier) (:lower later))))))
+
+(defn- conditional-period-delta-metric
+  [period-index stage-number expression]
+  (when (and (pos? stage-number)
+             (expression-parts? expression)
+             (= :- (:operator expression)))
+    (let [[comparison baseline & more] (:args expression)
+          comparison-entry
+          (when (and (map? comparison)
+                     (= :source/previous-stage (:lib/source comparison))
+                     (:lib/source-uuid comparison))
+            (get period-index
+                 [(dec stage-number) (:lib/source-uuid comparison)]))
+          baseline-entry
+          (when (and (map? baseline)
+                     (= :source/previous-stage (:lib/source baseline))
+                     (:lib/source-uuid baseline))
+            (get period-index
+                 [(dec stage-number) (:lib/source-uuid baseline)]))]
+      (when (and (empty? more)
+                 comparison-entry
+                 baseline-entry
+                 (same-metric? (:metric comparison-entry)
+                               (:metric baseline-entry))
+                 (window-strictly-before? (:window baseline-entry)
+                                          (:window comparison-entry)))
+        (:metric comparison-entry)))))
+
+(defn- conditional-period-change-ranking-index
+  [query metric-index]
+  (let [period-index (conditional-period-aggregation-index query metric-index)]
+    (into {}
+          (mapcat
+           (fn [stage-number]
+             (when (pos? stage-number)
+               (keep-indexed
+                (fn [expression-index expression]
+                  (let [parts (lib/expression-parts query stage-number expression)
+                        metric (conditional-period-delta-metric
+                                period-index
+                                stage-number
+                                parts)
+                        metadata (nth (or (lib/expressions-metadata
+                                           query
+                                           stage-number)
+                                          [])
+                                      expression-index
+                                      nil)
+                        source-uuid (:lib/source-uuid metadata)]
+                    (when (and metric source-uuid)
+                      [[stage-number source-uuid] metric])))
+                (or (lib/expressions query stage-number) []))))
+           (stage-numbers query)))))
+
+(defn- change-ranking-index
+  [query metric-index]
+  (merge (offset-change-ranking-index query)
+         (conditional-period-change-ranking-index query metric-index)))
 
 (defn- breakout-dimensions [query]
   (vec
@@ -425,7 +570,7 @@
         fingerprint     (dima.occurrence/exact-query-fingerprint original)
         metrics         (metric-observations original)
         metric-index    (metric-ranking-index original metrics)
-        change-index    (change-ranking-index original)
+        change-index    (change-ranking-index original metric-index)
         filters         (filter-observations original)
         ranking         (ranking-observations original metric-index change-index)
         breakouts       (breakout-dimensions original)
