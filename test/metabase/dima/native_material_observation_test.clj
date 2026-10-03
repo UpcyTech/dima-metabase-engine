@@ -440,7 +440,7 @@
                          (lib/aggregate (lib/sum total)))]
       (mt/with-temp
         [:model/Card
-         {metric-id :id}
+         {metric-id :id metric-entity-id :entity_id}
          {:name "R5 Conditional Lineage Metric"
           :type :metric
           :database_id (mt/id)
@@ -456,17 +456,21 @@
               conditional-period-index-var
               (ns-resolve 'metabase.dima.native-material-observation
                           'conditional-period-index)
-              conditional-change-index-var
+              conditional-change-var
               (ns-resolve 'metabase.dima.native-material-observation
-                          'conditional-change-ranking-index)
+                          'conditional-change-ranking-metric)
               metrics (metric-observations-var query)
               metric-sources (metric-source-index-var query metrics)
               periods (conditional-period-index-var query metric-sources)
-              changes (conditional-change-index-var query metrics)]
+              order-by (first (lib/order-bys query 2))
+              change (conditional-change-var query 2 order-by periods)]
           (is (= 1 (count metrics)) (pr-str metrics))
           (is (= 1 (count metric-sources)) (pr-str metric-sources))
           (is (= 2 (count periods)) (pr-str periods))
-          (is (= 1 (count changes)) (pr-str changes))))))))
+          (is (= {:metabase_metric_id metric-id
+                  :metabase_metric_entity_id metric-entity-id}
+                 change)
+              (pr-str change))))))))
 
 (deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
   (mt/test-driver :h2
