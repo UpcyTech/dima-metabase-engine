@@ -355,6 +355,7 @@
                   rank (first (:ranking out))]
               (is (= "desc" (:direction rank)))
               (is (= 5 (:limit rank)))
+              (is (= "level" (:basis rank)))
               (is (= "metric" (get-in rank [:target :kind])))
               (is (= metric-id (get-in rank [:target :metabase_metric_id])))
               (is (some #(and (= "breakout" (:role %))
@@ -390,13 +391,7 @@
                           (lib/- metric (lib/offset metric -1))))
               ranked (-> query0
                          (lib/order-by (lib/aggregation-ref query0 1) :desc)
-                         (lib/limit 3))
-              change-aggregation (nth (lib/aggregations ranked 0) 1)]
-          (println "R5_CHANGE_AGGREGATION="
-                   (pr-str change-aggregation))
-          (println "R5_CHANGE_PARTS="
-                   (pr-str (lib/expression-parts
-                            ranked 0 change-aggregation)))
+                         (lib/limit 3))]
           (mt/with-current-user owner-id
             (persist-turn! {:conversation-id convo-id
                             :query-id query-id
@@ -413,6 +408,85 @@
                      (get-in rank [:target :metabase_metric_id])))
               (is (= metric-entity-id
                      (get-in rank [:target :metabase_metric_entity_id]))))))))))
+
+(deftest r5-percentage-change-ranking-observability-contract-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "percentage-change-ranking-observability"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Percentage Change Ranking Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [mp (mt/metadata-provider)
+              metric (lib.metadata/metric mp metric-id)
+              date-col (lib.metadata/field mp (mt/id :orders :created_at))
+              change (lib/- (lib// metric (lib/offset metric -1)) 1.0)
+              query0 (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                         (lib/breakout (lib/with-temporal-bucket date-col :month))
+                         (lib/aggregate metric)
+                         (lib/aggregate change))
+              ranked (-> query0
+                         (lib/order-by (lib/aggregation-ref query0 1) :desc)
+                         (lib/limit 4))]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query ranked
+                            :user-id owner-id})
+            (let [rank (first (:ranking (observe! convo-id query-id)))]
+              (is (= "change" (:basis rank)))
+              (is (= "metric" (get-in rank [:target :kind])))
+              (is (= metric-id
+                     (get-in rank [:target :metabase_metric_id])))
+              (is (= metric-entity-id
+                     (get-in rank [:target :metabase_metric_entity_id]))))))))))
+
+(deftest r5-non-change-derived-ranking-remains-unsupported-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "non-change-derived-ranking"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id}
+         {:name "R5 Unsupported Derived Ranking Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [mp (mt/metadata-provider)
+              metric (lib.metadata/metric mp metric-id)
+              date-col (lib.metadata/field mp (mt/id :orders :created_at))
+              not-change (lib/+ metric (lib/offset metric -1))
+              query0 (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                         (lib/breakout (lib/with-temporal-bucket date-col :month))
+                         (lib/aggregate metric)
+                         (lib/aggregate not-change))
+              ranked (-> query0
+                         (lib/order-by (lib/aggregation-ref query0 1) :desc)
+                         (lib/limit 3))]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query ranked
+                            :user-id owner-id})
+            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                   (exception-code #(observe! convo-id query-id))))))))))
 
 (deftest r5-production-observer-has-executable-zero-p13-and-zero-execution-dependency-test
   (mt/test-driver :h2
