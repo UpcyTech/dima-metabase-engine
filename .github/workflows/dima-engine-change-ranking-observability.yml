@@ -26,13 +26,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BASE=d5c60dc9f37a9ec9c5b0117f178146bbcb8dca88
+          BASE=468643040c74959ffaad6e378b110d5841567f7c
           git cat-file -e "$BASE^{commit}" 2>/dev/null || \
             git fetch --no-tags --depth=1 origin "$BASE"
           git cat-file -e "$BASE^{commit}"
           python - <<'PY'
           import subprocess
-          base = "d5c60dc9f37a9ec9c5b0117f178146bbcb8dca88"
+          base = "468643040c74959ffaad6e378b110d5841567f7c"
           changed = set(
               subprocess.check_output(
                   ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**"],
@@ -47,7 +47,7 @@ jobs:
         uses: ./.github/actions/prepare-backend
         with:
           java-version: "25"
-      - name: Run bounded dima.9 lifecycle and observability regression
+      - name: Run bounded dima.10 lifecycle and observability regression
         run: >-
           clojure -X:dev:ci:test:oss:oss-dev
           :only '[metabase.metabot.agent.profiles-test
