@@ -213,11 +213,13 @@
   [column]
   (when (and (map? column) (temporal-column? column))
     (cond
-      (:lib/source-uuid column)
-      [:source-uuid (:lib/source-uuid column)]
-
+      ;; Persisted/rehydrated field refs may receive fresh query-local UUIDs.
+      ;; Stable Metabase Field identity is stronger whenever it exists.
       (pos-int? (:id column))
       [:field-id (:table-id column) (:id column)]
+
+      (:lib/source-uuid column)
+      [:source-uuid (:lib/source-uuid column)]
 
       :else nil)))
 
@@ -251,14 +253,31 @@
          :lower_bound (:bound lower)
          :upper_bound (:bound upper)}))))
 
+(defn- governed-metric-for-material-column
+  [query stage-number measure metric-by-source]
+  (when (map? measure)
+    (or
+     (get metric-by-source (:lib/source-uuid measure))
+     ;; After app-DB JSON round-trip, a previous-stage aggregation can be
+     ;; represented as a name-based field ref with a fresh query-local UUID.
+     ;; Use Lib's ambiguity-aware column matcher to recover the canonical
+     ;; previous-stage output, then read only its stable source lineage.
+     (when (pos? stage-number)
+       (let [previous-stage (dec stage-number)
+             columns (vec (or (lib/returned-columns query previous-stage) []))
+             matched (lib/find-matching-column
+                      query previous-stage measure columns)]
+         (when matched
+           (get metric-by-source (:lib/source-uuid matched))))))))
+
 (defn- conditional-period-aggregation
-  [parts metric-by-source]
+  [query stage-number parts metric-by-source]
   (when (and (expression-parts? parts)
              (= :sum-where (:operator parts))
              (= 2 (count (:args parts))))
     (let [[measure condition] (:args parts)
-          metric (when (map? measure)
-                   (get metric-by-source (:lib/source-uuid measure)))
+          metric (governed-metric-for-material-column
+                  query stage-number measure metric-by-source)
           window (half-open-period-window condition)]
       (when (and metric window)
         {:metric metric
@@ -272,7 +291,8 @@
            (keep-indexed
             (fn [aggregation-index aggregation]
               (let [parts (lib/expression-parts query stage-number aggregation)
-                    period (conditional-period-aggregation parts metric-by-source)
+                    period (conditional-period-aggregation
+                            query stage-number parts metric-by-source)
                     metadata (nth (or (lib/aggregations-metadata query stage-number) [])
                                   aggregation-index
                                   nil)
