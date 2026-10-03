@@ -349,27 +349,6 @@
                  (later-period? comparison baseline))
         (:metric comparison)))))
 
-(defn- period-pair-change-ranking-index
-  [query metric-index]
-  (into {}
-        (mapcat
-         (fn [stage-number]
-           (keep-indexed
-            (fn [expression-index expression]
-              (let [parts (lib/expression-parts query stage-number expression)
-                    metric (period-pair-change-metric
-                            query stage-number metric-index parts)
-                    metadata (nth (or (lib/expressions-metadata
-                                       query stage-number)
-                                      [])
-                                  expression-index
-                                  nil)
-                    source-uuid (:lib/source-uuid metadata)]
-                (when (and metric source-uuid)
-                  [[stage-number source-uuid] metric])))
-            (or (lib/expressions query stage-number) [])))
-         (stage-numbers query))))
-
 (defn- leading-temporal-breakout?
   [query stage-number]
   (when-let [breakout (first (or (lib/breakouts query stage-number) []))]
@@ -400,9 +379,8 @@
 
 
 (defn- change-ranking-index
-  [query metric-index]
-  (merge (offset-change-ranking-index query)
-         (period-pair-change-ranking-index query metric-index)))
+  [query]
+  (offset-change-ranking-index query))
 (defn- breakout-dimensions [query]
   (vec
    (mapcat
@@ -630,7 +608,7 @@
         fingerprint     (dima.occurrence/exact-query-fingerprint original)
         metrics         (metric-observations original)
         metric-index    (metric-ranking-index original metrics)
-        change-index    (change-ranking-index original metric-index)
+        change-index    (change-ranking-index original)
         filters         (filter-observations original)
         ranking         (ranking-observations original metric-index change-index)
         breakouts       (breakout-dimensions original)
