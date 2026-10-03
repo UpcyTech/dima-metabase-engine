@@ -1,0 +1,38 @@
+name: dima-engine-change-ranking-observability
+
+on:
+  push:
+    branches:
+      - test/dima9-change-ranking-observability
+    paths:
+      - "test/metabase/dima/native_material_observation_test.clj"
+      - "src/metabase/dima/native_material_observation.clj"
+      - ".github/workflows/dima-engine-change-ranking-observability.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Prove exact frozen base
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=d5c60dc9f37a9ec9c5b0117f178146bbcb8dca88
+          git merge-base --is-ancestor "$BASE" HEAD
+          test -z "$(git diff --name-only "$BASE"..HEAD -- 'src/**')"
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+      - name: Run R5 change-ranking observability proof
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-material-observation-test]'
