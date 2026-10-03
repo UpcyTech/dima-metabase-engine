@@ -221,9 +221,64 @@
     (when (= 1 (count leaves))
       (first leaves))))
 
+(defn- canonical-month-range
+  [value]
+  (let [text (str value)]
+    (or
+     (try
+       (let [dt (OffsetDateTime/parse text)]
+         (when (and (= 1 (.getDayOfMonth dt))
+                    (zero? (.getHour dt))
+                    (zero? (.getMinute dt))
+                    (zero? (.getSecond dt))
+                    (zero? (.getNano dt)))
+           [(.toInstant dt)
+            (.toInstant (.plusMonths dt 1))]))
+       (catch Exception _ nil))
+     (try
+       (let [dt (LocalDateTime/parse text)]
+         (when (and (= 1 (.getDayOfMonth dt))
+                    (zero? (.getHour dt))
+                    (zero? (.getMinute dt))
+                    (zero? (.getSecond dt))
+                    (zero? (.getNano dt)))
+           [(.toInstant dt ZoneOffset/UTC)
+            (.toInstant (.plusMonths dt 1) ZoneOffset/UTC)]))
+       (catch Exception _ nil))
+     (try
+       (let [d (LocalDate/parse text)]
+         (when (= 1 (.getDayOfMonth d))
+           [(-> d (.atStartOfDay ZoneOffset/UTC) .toInstant)
+            (-> d (.plusMonths 1) (.atStartOfDay ZoneOffset/UTC) .toInstant)]))
+       (catch Exception _ nil)))))
+
+(defn- month-bucket-equality-interval
+  [predicate]
+  (when (and (expression-parts? predicate)
+             (= := (:operator predicate))
+             (= 2 (count (:args predicate))))
+    (let [[column value] (:args predicate)
+          scalar (single-scalar value)
+          bucket (when (map? column)
+                   (lib/raw-temporal-bucket column))
+          range (when (and scalar (= :month bucket))
+                  (canonical-month-range scalar))]
+      (when (and (map? column)
+                 (temporal-column? column)
+                 (pos-int? (:id column))
+                 range)
+        (let [[lower upper] range]
+          (cond-> {:time_field_id (:id column)
+                   :lower lower
+                   :upper upper}
+            (pos-int? (:table-id column))
+            (assoc :table_id (:table-id column))))))))
+
 (defn- half-open-temporal-interval
   [predicate]
-  (when (expression-parts? predicate)
+  (or
+   (month-bucket-equality-interval predicate)
+   (when (expression-parts? predicate)
     (let [clauses (if (= :and (:operator predicate))
                     (:args predicate)
                     [predicate])
@@ -260,7 +315,7 @@
             (cond-> {:time_field_id field-id
                      :lower lower
                      :upper upper}
-              (pos-int? table-id) (assoc :table_id table-id))))))))
+              (pos-int? table-id) (assoc :table_id table-id)))))))))
 
 (defn- matched-previous-stage-column
   [query stage-number column candidates]
