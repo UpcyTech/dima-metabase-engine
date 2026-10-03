@@ -569,6 +569,87 @@
             (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
                    (exception-code #(observe! convo-id query-id))))))))))
 
+(deftest r5-conditional-period-derived-delta-ranking-observability-contract-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "conditional-period-derived-delta"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Conditional Delta Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [mp (mt/metadata-provider)
+              metric (lib.metadata/metric mp metric-id)
+              entity-col (lib.metadata/field mp (mt/id :orders :user_id))
+              date-col (lib.metadata/field mp (mt/id :orders :created_at))
+              lower (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
+              split (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
+              upper (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
+              stage0 (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                         (lib/breakout entity-col)
+                         (lib/breakout date-col)
+                         (lib/aggregate metric)
+                         (lib/filter (lib/>= date-col lower))
+                         (lib/filter (lib/< date-col upper)))
+              stage1-base (lib/append-stage stage0)
+              stage1-cols (lib/aggregable-columns stage1-base nil)
+              stage1-entity (some #(when (= (mt/id :orders :user_id) (:id %)) %) stage1-cols)
+              stage1-date (some #(when (= (mt/id :orders :created_at) (:id %)) %) stage1-cols)
+              stage1-metric (some #(when (and (nil? (:id %))
+                                               (not= :type/DateTime (:effective-type %))
+                                               (not= :type/Date (:effective-type %)))
+                                      %)
+                                  stage1-cols)
+              query1 (-> stage1-base
+                         (lib/breakout stage1-entity)
+                         (lib/aggregate
+                          (lib/sum-where
+                           stage1-metric
+                           (lib/and (lib/>= stage1-date lower)
+                                    (lib/< stage1-date split))))
+                         (lib/aggregate
+                          (lib/sum-where
+                           stage1-metric
+                           (lib/and (lib/>= stage1-date split)
+                                    (lib/< stage1-date upper)))))
+              stage2-base (lib/append-stage query1)
+              stage2-cols (lib/expressionable-columns stage2-base nil)
+              stage2-values (vec
+                             (remove
+                              #(= (mt/id :orders :user_id) (:id %))
+                              stage2-cols))
+              baseline-col (first stage2-values)
+              comparison-col (second stage2-values)
+              query2 (lib/expression
+                      stage2-base
+                      "derived_delta"
+                      (lib/- comparison-col baseline-col))
+              ranked (lib/order-by query2 (lib/expression-ref query2 "derived_delta") :desc)]
+          (is stage1-entity)
+          (is stage1-date)
+          (is stage1-metric)
+          (is (= 2 (count stage2-values)))
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query ranked
+                            :user-id owner-id})
+            ;; Intentional dima.10 RED: this is the same generic legal family as
+            ;; the live repair -- two period-specific aggregations of one governed
+            ;; metric, then a later-stage delta ranked DESC. Current dima.10 only
+            ;; observes the Offset family and cannot yet prove this lineage.
+            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                   (exception-code #(observe! convo-id query-id))))))))))
+
 (deftest r5-production-observer-has-executable-zero-p13-and-zero-execution-dependency-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
