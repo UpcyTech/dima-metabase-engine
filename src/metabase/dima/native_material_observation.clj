@@ -191,22 +191,32 @@
       (delta-over-previous-metric value)
       (scaled-change-metric value)))
 
+(defn- leading-temporal-breakout?
+  [query stage-number]
+  (when-let [breakout (first (or (lib/breakouts query stage-number) []))]
+    (let [column (lib/breakout-column query stage-number breakout)]
+      (boolean
+       (and (temporal-column? column)
+            (lib/raw-temporal-bucket column))))))
+
 (defn- change-ranking-index
   [query]
   (into {}
         (mapcat
          (fn [stage-number]
-           (keep-indexed
-            (fn [aggregation-index aggregation]
-              (let [parts (lib/expression-parts query stage-number aggregation)
-                    metric (change-ranking-metric parts)
-                    metadata (nth (or (lib/aggregations-metadata query stage-number) [])
-                                  aggregation-index
-                                  nil)
-                    source-uuid (:lib/source-uuid metadata)]
-                (when (and metric source-uuid)
-                  [[stage-number source-uuid] metric])))
-            (or (lib/aggregations query stage-number) [])))
+           (let [period-over-period? (leading-temporal-breakout? query stage-number)]
+             (keep-indexed
+              (fn [aggregation-index aggregation]
+                (let [parts (lib/expression-parts query stage-number aggregation)
+                      metric (when period-over-period?
+                               (change-ranking-metric parts))
+                      metadata (nth (or (lib/aggregations-metadata query stage-number) [])
+                                    aggregation-index
+                                    nil)
+                      source-uuid (:lib/source-uuid metadata)]
+                  (when (and metric source-uuid)
+                    [[stage-number source-uuid] metric])))
+              (or (lib/aggregations query stage-number) []))))
          (stage-numbers query))))
 
 (defn- breakout-dimensions [query]
