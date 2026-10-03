@@ -513,18 +513,25 @@
                   metric-sources (metric-source-index-var restored metrics)
                   periods (conditional-period-index-var restored metric-sources)
                   order-by (first (lib/order-bys restored 2))
-                  change (conditional-change-var restored 2 order-by periods)]
-              (is (= 1 (count metrics)) (pr-str metrics))
-              (is (= 1 (count metric-sources)) (pr-str metric-sources))
-              (is (= 2 (count periods)) (pr-str periods))
+                  change (conditional-change-var restored 2 order-by periods)
+                  stage1-aggs (vec (or (lib/aggregations restored 1) []))
+                  stage1-parts (mapv #(lib/expression-parts restored 1 %) stage1-aggs)
+                  stage1-meta (vec (or (lib/aggregations-metadata restored 1) []))
+                  details {:order-by order-by
+                           :metrics metrics
+                           :metric-sources metric-sources
+                           :stage1-aggs stage1-aggs
+                           :stage1-parts stage1-parts
+                           :stage1-meta stage1-meta
+                           :periods periods
+                           :change change}]
+              (is (= 1 (count metrics)) (pr-str details))
+              (is (= 1 (count metric-sources)) (pr-str details))
+              (is (= 2 (count periods)) (pr-str details))
               (is (= {:metabase_metric_id metric-id
                       :metabase_metric_entity_id metric-entity-id}
                      change)
-                  (pr-str {:order-by order-by
-                           :metrics metrics
-                           :metric-sources metric-sources
-                           :periods periods
-                           :change change})))))))))
+                  (pr-str details)))))))))
 
 
 (deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
