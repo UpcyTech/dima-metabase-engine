@@ -517,9 +517,17 @@
                   stage1-aggs (vec (or (lib/aggregations restored 1) []))
                   stage1-parts (mapv #(lib/expression-parts restored 1 %) stage1-aggs)
                   stage1-meta (vec (or (lib/aggregations-metadata restored 1) []))
+                  stage0-returned (vec (or (lib/returned-columns restored 0) []))
+                  stage1-measures (mapv #(first (:args %)) stage1-parts)
+                  stage1-matches (mapv #(lib/find-matching-column
+                                         restored 0 % stage0-returned)
+                                       stage1-measures)
                   details {:order-by order-by
                            :metrics metrics
                            :metric-sources metric-sources
+                           :stage0-returned stage0-returned
+                           :stage1-measures stage1-measures
+                           :stage1-matches stage1-matches
                            :stage1-aggs stage1-aggs
                            :stage1-parts stage1-parts
                            :stage1-meta stage1-meta
