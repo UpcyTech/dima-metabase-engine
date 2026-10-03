@@ -369,8 +369,14 @@
   (first (filter predicate columns)))
 
 (defn- conditional-period-delta-query
-  [metric-id]
-  (let [mp         (mt/metadata-provider)
+  ([metric-id]
+   (conditional-period-delta-query metric-id {}))
+  ([metric-id {:keys [baseline-end comparison-start reverse? delta-operator]
+               :or {baseline-end "2026-06-01"
+                    comparison-start "2026-06-01"
+                    reverse? false
+                    delta-operator :subtract}}]
+   (let [mp         (mt/metadata-provider)
         table      (lib.metadata/table mp (mt/id :orders))
         user-col   (lib.metadata/field mp (mt/id :orders :user_id))
         date-col   (lib.metadata/field mp (mt/id :orders :created_at))
@@ -390,17 +396,18 @@
         metric1    (column-by stage1-cols
                               #(= metric-src (:lib/source-uuid %)))
         may-start  (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
-        jun-start  (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
+        baseline-end-value (lib/absolute-datetime (LocalDate/parse baseline-end) :day)
+        comparison-start-value (lib/absolute-datetime (LocalDate/parse comparison-start) :day)
         jul-start  (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
         baseline   (lib/fresh-uuids
                     (lib/sum-where
                      metric1
                      (lib/and (lib/>= date1 may-start)
-                              (lib/< date1 jun-start))))
+                              (lib/< date1 baseline-end-value))))
         comparison (lib/fresh-uuids
                     (lib/sum-where
                      metric1
-                     (lib/and (lib/>= date1 jun-start)
+                     (lib/and (lib/>= date1 comparison-start-value)
                               (lib/< date1 jul-start))))
         q1         (-> q1-base
                        (lib/breakout 1 user1)
@@ -415,10 +422,14 @@
                               #(= baseline-src (:lib/source-uuid %)))
         comparison2 (column-by stage2-cols
                                #(= comparison-src (:lib/source-uuid %)))
-        q2         (lib/expression q2-base 2 "period_delta"
-                                   (lib/- comparison2 baseline2))]
-    (lib/fresh-uuids
-     (lib/order-by q2 (lib/expression-ref q2 "period_delta") :desc))))
+        delta      (case delta-operator
+                     :subtract (if reverse?
+                                 (lib/- baseline2 comparison2)
+                                 (lib/- comparison2 baseline2))
+                     :add (lib/+ comparison2 baseline2))
+        q2         (lib/expression q2-base 2 "period_delta" delta)]
+     (lib/fresh-uuids
+      (lib/order-by q2 (lib/expression-ref q2 "period_delta") :desc)))))
 
 (deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
   (mt/test-driver :h2
@@ -452,6 +463,91 @@
                      (get-in rank [:target :metabase_metric_id])))
               (is (= metric-entity-id
                      (get-in rank [:target :metabase_metric_entity_id]))))))))))
+
+
+(deftest r5-conditional-period-delta-gap-remains-unsupported-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "conditional-period-delta-gap"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id}
+         {:name "R5 Conditional Gap Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (conditional-period-delta-query
+                     metric-id
+                     {:baseline-end "2026-06-01"
+                      :comparison-start "2026-06-02"})]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                   (exception-code #(observe! convo-id query-id))))))))))
+
+(deftest r5-conditional-period-reversed-delta-remains-unsupported-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "conditional-period-reversed-delta"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id}
+         {:name "R5 Conditional Reverse Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (conditional-period-delta-query metric-id {:reverse? true})]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                   (exception-code #(observe! convo-id query-id))))))))))
+
+(deftest r5-conditional-period-non-delta-expression-remains-unsupported-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "conditional-period-non-delta"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id}
+         {:name "R5 Conditional Non Delta Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (conditional-period-delta-query metric-id {:delta-operator :add})]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                   (exception-code #(observe! convo-id query-id))))))))))
 
 (deftest r5-change-ranking-observability-contract-test
   (mt/test-driver :h2
