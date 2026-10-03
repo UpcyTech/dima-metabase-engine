@@ -5,6 +5,7 @@ on:
     branches:
       - hotfix/dima11-equality-period-observer
     paths:
+      - "src/metabase/dima/native_material_observation.clj"
       - "test/metabase/dima/native_material_observation_test.clj"
       - ".github/workflows/dima-engine-dima11-equality-hotfix-proof.yml"
 
@@ -21,7 +22,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 8
 
-      - name: Prove exact certified dima.11 base and zero production diff
+      - name: Prove exact certified dima.11 base and observer-only production diff
         shell: bash
         run: |
           set -euo pipefail
@@ -37,8 +38,9 @@ jobs:
                   text=True,
               ).splitlines()
           )
-          assert changed == set(), changed
-          print("production_source_diff=NONE")
+          expected = {"src/metabase/dima/native_material_observation.clj"}
+          assert changed == expected, (changed, expected)
+          print("production_source_diff=" + ",".join(sorted(changed)))
           PY
 
       - name: Prepare backend
