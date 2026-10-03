@@ -29,7 +29,6 @@ jobs:
           git cat-file -e "$BASE^{commit}" 2>/dev/null || \
             git fetch --no-tags --depth=1 origin "$BASE"
           git cat-file -e "$BASE^{commit}"
-          git merge-base --is-ancestor "$BASE" HEAD
           python - <<'PY'
           import subprocess
           base = "d5c60dc9f37a9ec9c5b0117f178146bbcb8dca88"
