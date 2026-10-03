@@ -472,6 +472,61 @@
                  change)
               (pr-str change)))))))
 
+(deftest r5-restored-conditional-period-lineage-contract-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "conditional-period-restored-lineage"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Restored Conditional Lineage Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (conditional-period-delta-query metric-id)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (let [restored (:query (dima.occurrence/load-occurrence! convo-id query-id))
+                  metric-observations-var
+                  (ns-resolve 'metabase.dima.native-material-observation
+                              'metric-observations)
+                  metric-source-index-var
+                  (ns-resolve 'metabase.dima.native-material-observation
+                              'metric-source-index)
+                  conditional-period-index-var
+                  (ns-resolve 'metabase.dima.native-material-observation
+                              'conditional-period-index)
+                  conditional-change-var
+                  (ns-resolve 'metabase.dima.native-material-observation
+                              'conditional-change-ranking-metric)
+                  metrics (metric-observations-var restored)
+                  metric-sources (metric-source-index-var restored metrics)
+                  periods (conditional-period-index-var restored metric-sources)
+                  order-by (first (lib/order-bys restored 2))
+                  change (conditional-change-var restored 2 order-by periods)]
+              (is (= 1 (count metrics)) (pr-str metrics))
+              (is (= 1 (count metric-sources)) (pr-str metric-sources))
+              (is (= 2 (count periods)) (pr-str periods))
+              (is (= {:metabase_metric_id metric-id
+                      :metabase_metric_entity_id metric-entity-id}
+                     change)
+                  (pr-str {:order-by order-by
+                           :metrics metrics
+                           :metric-sources metric-sources
+                           :periods periods
+                           :change change})))))))))
+
+
 (deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
