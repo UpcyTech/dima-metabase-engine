@@ -390,7 +390,13 @@
                           (lib/- metric (lib/offset metric -1))))
               ranked (-> query0
                          (lib/order-by (lib/aggregation-ref query0 1) :desc)
-                         (lib/limit 3))]
+                         (lib/limit 3))
+              change-aggregation (nth (lib/aggregations ranked 0) 1)]
+          (println "R5_CHANGE_AGGREGATION="
+                   (pr-str change-aggregation))
+          (println "R5_CHANGE_PARTS="
+                   (pr-str (lib/expression-parts
+                            ranked 0 change-aggregation)))
           (mt/with-current-user owner-id
             (persist-turn! {:conversation-id convo-id
                             :query-id query-id
