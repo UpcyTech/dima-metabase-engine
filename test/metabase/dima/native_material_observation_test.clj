@@ -638,16 +638,6 @@
           (is stage1-date)
           (is stage1-metric)
           (is (= 2 (count stage2-values)))
-          (println "DIMA_R5_STAGE1_METRIC=" (pr-str stage1-metric))
-          (println "DIMA_R5_STAGE1_AGG_META="
-                   (pr-str (lib/aggregations-metadata ranked 1)))
-          (println "DIMA_R5_STAGE1_AGG_PARTS="
-                   (pr-str (mapv #(lib/expression-parts ranked 1 %)
-                                 (lib/aggregations ranked 1))))
-          (println "DIMA_R5_STAGE2_VALUES=" (pr-str stage2-values))
-          (println "DIMA_R5_STAGE2_EXPR_PARTS="
-                   (pr-str (lib/expression-parts ranked 2
-                                                 (first (lib/expressions ranked 2)))))
           (mt/with-current-user owner-id
             (persist-turn! {:conversation-id convo-id
                             :query-id query-id
