@@ -8,6 +8,7 @@
   (:require
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
+   [metabase.lib.expression :as lib.expression]
    [metabase.types.core]
    [metabase.util.json :as json])
   (:import
@@ -506,15 +507,22 @@
        (remove :temporal)
        (mapv #(dissoc % :temporal))))
 
+(defn- resolved-order-by-target
+  [query stage-number order-by]
+  (let [target (nth order-by 2 nil)]
+    (if (and (vector? target)
+             (= :expression (first target)))
+      (lib.expression/resolve-expression query stage-number (last target))
+      target)))
+
 (defn- order-by-period-pair-change-metric
   [query stage-number metric-index order-by]
-  (let [target (nth order-by 2 nil)]
-    (when target
-      (period-pair-change-metric
-       query
-       stage-number
-       metric-index
-       (lib/expression-parts query stage-number target)))))
+  (when-let [target (resolved-order-by-target query stage-number order-by)]
+    (period-pair-change-metric
+     query
+     stage-number
+     metric-index
+     (lib/expression-parts query stage-number target))))
 
 
 (defn- ranking-observations [query metric-index change-index]
