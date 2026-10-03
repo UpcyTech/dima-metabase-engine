@@ -598,10 +598,10 @@
                     #(and (= :source/previous-stage (:lib/source %))
                           (nil? (:id %))
                           (not (:lib/breakout? %))))
-        may-start       (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
-        baseline-end    (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
-        comparison-start (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
-        july-start      (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
+        may-start        "2026-05-01T00:00:00"
+        baseline-end     "2026-06-01T00:00:00"
+        comparison-start "2026-06-01T00:00:00"
+        july-start       "2026-07-01T00:00:00"
         baseline   (lib/with-expression-name
                     (lib/sum-where
                      metric1
