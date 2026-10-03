@@ -85,6 +85,22 @@
                               :metabase_metric_entity_id])]))))
         metric-observations))
 
+(defn- metric-source-index
+  [query metric-observations]
+  (into {}
+        (keep
+         (fn [{:keys [stage_number aggregation_index] :as metric}]
+           (let [metadata (nth (or (lib/aggregations-metadata query stage_number) [])
+                               aggregation_index
+                               nil)
+                 source-uuid (:lib/source-uuid metadata)]
+             (when source-uuid
+               [source-uuid
+                (select-keys metric
+                             [:metabase_metric_id
+                              :metabase_metric_entity_id])]))))
+        metric-observations))
+
 (defn- stable-metric-identity
   [value]
   (when (and (map? value)
@@ -190,6 +206,124 @@
       (percentage-change-metric value)
       (delta-over-previous-metric value)
       (scaled-change-metric value)))
+
+(defn- temporal-lineage-key
+  [column]
+  (when (and (map? column) (temporal-column? column))
+    (cond
+      (:lib/source-uuid column)
+      [:source-uuid (:lib/source-uuid column)]
+
+      (pos-int? (:id column))
+      [:field-id (:table-id column) (:id column)]
+
+      :else nil)))
+
+(defn- half-open-period-window
+  [value]
+  (when (and (expression-parts? value)
+             (= :and (:operator value))
+             (= 2 (count (:args value))))
+    (let [bounds
+          (keep
+           (fn [part]
+             (when (and (expression-parts? part)
+                        (#{:>= :<} (:operator part))
+                        (= 2 (count (:args part))))
+               (let [[column raw-bound] (:args part)
+                     lineage (temporal-lineage-key column)
+                     bound (wire-value raw-bound)]
+                 (when (and lineage (string? bound))
+                   {:operator (:operator part)
+                    :lineage lineage
+                    :bound bound}))))
+           (:args value))
+          lower (first (filter #(= :>= (:operator %)) bounds))
+          upper (first (filter #(= :< (:operator %)) bounds))]
+      (when (and (= 2 (count bounds))
+                 lower
+                 upper
+                 (= (:lineage lower) (:lineage upper))
+                 (neg? (compare (:bound lower) (:bound upper))))
+        {:temporal_lineage (:lineage lower)
+         :lower_bound (:bound lower)
+         :upper_bound (:bound upper)}))))
+
+(defn- conditional-period-aggregation
+  [parts metric-by-source]
+  (when (and (expression-parts? parts)
+             (= :sum-where (:operator parts))
+             (= 2 (count (:args parts))))
+    (let [[measure condition] (:args parts)
+          metric (when (map? measure)
+                   (get metric-by-source (:lib/source-uuid measure)))
+          window (half-open-period-window condition)]
+      (when (and metric window)
+        {:metric metric
+         :window window}))))
+
+(defn- conditional-period-index
+  [query metric-by-source]
+  (into {}
+        (mapcat
+         (fn [stage-number]
+           (keep-indexed
+            (fn [aggregation-index aggregation]
+              (let [parts (lib/expression-parts query stage-number aggregation)
+                    period (conditional-period-aggregation parts metric-by-source)
+                    metadata (nth (or (lib/aggregations-metadata query stage-number) [])
+                                  aggregation-index
+                                  nil)
+                    source-uuid (:lib/source-uuid metadata)]
+                (when (and period source-uuid)
+                  [source-uuid period])))
+            (or (lib/aggregations query stage-number) [])))
+         (stage-numbers query))))
+
+(defn- adjacent-period-delta-metric
+  [parts conditional-periods]
+  (when (and (expression-parts? parts)
+             (= :- (:operator parts))
+             (= 2 (count (:args parts))))
+    (let [[comparison-ref baseline-ref] (:args parts)
+          comparison (when (map? comparison-ref)
+                       (get conditional-periods (:lib/source-uuid comparison-ref)))
+          baseline (when (map? baseline-ref)
+                     (get conditional-periods (:lib/source-uuid baseline-ref)))
+          comparison-window (:window comparison)
+          baseline-window (:window baseline)]
+      (when (and comparison
+                 baseline
+                 (same-metric? (:metric comparison) (:metric baseline))
+                 (= (:temporal_lineage comparison-window)
+                    (:temporal_lineage baseline-window))
+                 (= (:upper_bound baseline-window)
+                    (:lower_bound comparison-window))
+                 (neg? (compare (:lower_bound baseline-window)
+                                (:upper_bound baseline-window)))
+                 (neg? (compare (:lower_bound comparison-window)
+                                (:upper_bound comparison-window))))
+        (:metric comparison)))))
+
+(defn- conditional-change-ranking-index
+  [query metric-observations]
+  (let [metric-by-source (metric-source-index query metric-observations)
+        periods (conditional-period-index query metric-by-source)]
+    (into {}
+          (mapcat
+           (fn [stage-number]
+             (keep-indexed
+              (fn [expression-index expression]
+                (let [parts (lib/expression-parts query stage-number expression)
+                      metric (adjacent-period-delta-metric parts periods)
+                      metadata (nth (or (lib/expressions-metadata query stage-number) [])
+                                    expression-index
+                                    nil)
+                      source-uuid (:lib/source-uuid metadata)]
+                  (when (and metric source-uuid)
+                    [[stage-number source-uuid] metric])))
+              (or (lib/expressions query stage-number) [])))
+           (stage-numbers query)))))
 
 (defn- leading-temporal-breakout?
   [query stage-number]
@@ -425,7 +559,9 @@
         fingerprint     (dima.occurrence/exact-query-fingerprint original)
         metrics         (metric-observations original)
         metric-index    (metric-ranking-index original metrics)
-        change-index    (change-ranking-index original)
+        change-index    (merge
+                         (change-ranking-index original)
+                         (conditional-change-ranking-index original metrics))
         filters         (filter-observations original)
         ranking         (ranking-observations original metric-index change-index)
         breakouts       (breakout-dimensions original)
