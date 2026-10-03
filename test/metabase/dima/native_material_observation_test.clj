@@ -417,7 +417,8 @@
                                #(= comparison-src (:lib/source-uuid %)))
         q2         (lib/expression q2-base 2 "period_delta"
                                    (lib/- comparison2 baseline2))]
-    (lib/order-by q2 (lib/expression-ref q2 "period_delta") :desc)))
+    (lib/fresh-uuids
+     (lib/order-by q2 (lib/expression-ref q2 "period_delta") :desc))))
 
 (deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
   (mt/test-driver :h2
