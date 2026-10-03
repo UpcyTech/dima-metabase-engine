@@ -135,8 +135,8 @@
         upper    (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)]
     (-> (lib/query mp (lib.metadata/table mp (mt/id :checkins)))
         (lib/aggregate (lib/count))
-        (lib/filter (lib/>= date-col (lower)))
-        (lib/filter (lib/< date-col (upper))))))
+        (lib/filter (lib/>= date-col lower))
+        (lib/filter (lib/< date-col upper)))))
 
 (defn- v3-persisted-absolute-date-query []
   ;; Frozen provider-free equivalent of the V3 occurrence class: the persisted
@@ -604,9 +604,8 @@
               stage1-cols (lib/aggregable-columns stage1-base nil)
               stage1-entity (some #(when (= (mt/id :orders :user_id) (:id %)) %) stage1-cols)
               stage1-date (some #(when (= (mt/id :orders :created_at) (:id %)) %) stage1-cols)
-              stage1-metric (some #(when (and (nil? (:id %))
-                                               (not= :type/DateTime (:effective-type %))
-                                               (not= :type/Date (:effective-type %)))
+              stage1-metric (some #(when (and (= :source/previous-stage (:lib/source %))
+                                               (nil? (:id %)))
                                       %)
                                   stage1-cols)
               query1 (-> stage1-base
@@ -624,8 +623,9 @@
               stage2-base (lib/append-stage query1)
               stage2-cols (lib/expressionable-columns stage2-base nil)
               stage2-values (vec
-                             (remove
-                              #(= (mt/id :orders :user_id) (:id %))
+                             (filter
+                              #(and (= :source/previous-stage (:lib/source %))
+                                    (nil? (:id %)))
                               stage2-cols))
               baseline-col (first stage2-values)
               comparison-col (second stage2-values)
