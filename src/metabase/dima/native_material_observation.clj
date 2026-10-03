@@ -223,6 +223,22 @@
 
       :else nil)))
 
+(defn- temporal-bound-value
+  [value]
+  (cond
+    (string? value)
+    value
+
+    (and (expression-parts? value)
+         (= :absolute-datetime (:operator value))
+         (= 2 (count (:args value))))
+    (let [[raw-value unit] (:args value)]
+      (when (and (string? raw-value)
+                 (keyword? unit))
+        raw-value))
+
+    :else nil))
+
 (defn- half-open-period-window
   [value]
   (when (and (expression-parts? value)
@@ -236,8 +252,8 @@
                         (= 2 (count (:args part))))
                (let [[column raw-bound] (:args part)
                      lineage (temporal-lineage-key column)
-                     bound (wire-value raw-bound)]
-                 (when (and lineage (string? bound))
+                     bound (temporal-bound-value raw-bound)]
+                 (when (and lineage bound)
                    {:operator (:operator part)
                     :lineage lineage
                     :bound bound}))))
