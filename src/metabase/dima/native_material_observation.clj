@@ -506,6 +506,17 @@
        (remove :temporal)
        (mapv #(dissoc % :temporal))))
 
+(defn- order-by-period-pair-change-metric
+  [query stage-number metric-index order-by]
+  (let [target (nth order-by 2 nil)]
+    (when target
+      (period-pair-change-metric
+       query
+       stage-number
+       metric-index
+       (lib/expression-parts query stage-number target)))))
+
+
 (defn- ranking-observations [query metric-index change-index]
   (vec
    (mapcat
@@ -525,8 +536,11 @@
                  direction (:direction info)
                  source-key (when column
                               [stage-number (:lib/source-uuid column)])
-                 change-metric (when source-key
-                                 (get change-index source-key))
+                 change-metric (or
+                                (order-by-period-pair-change-metric
+                                 query stage-number metric-index order-by)
+                                (when source-key
+                                  (get change-index source-key)))
                  metric (when source-key
                           (get metric-index source-key))
                  field-id (:id column)
