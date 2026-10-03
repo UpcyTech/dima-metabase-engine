@@ -598,19 +598,20 @@
                     #(and (= :source/previous-stage (:lib/source %))
                           (nil? (:id %))
                           (not (:lib/breakout? %))))
-        may-start  (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
-        june-start (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
-        july-start (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
+        may-start       (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
+        baseline-end    (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
+        comparison-start (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
+        july-start      (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
         baseline   (lib/with-expression-name
                     (lib/sum-where
                      metric1
                      (lib/and (lib/>= date1 may-start)
-                              (lib/< date1 june-start)))
+                              (lib/< date1 baseline-end)))
                     "Baseline Total")
         comparison (lib/with-expression-name
                     (lib/sum-where
                      metric1
-                     (lib/and (lib/>= date1 june-start)
+                     (lib/and (lib/>= date1 comparison-start)
                               (lib/< date1 july-start)))
                     "Comparison Total")
         stage1a    (-> stage1
