@@ -362,6 +362,126 @@
                               (= (mt/id :orders :user_id) (:field_id %)))
                         (:dimensions out))))))))))
 
+
+
+(defn- conditional-period-delta-query
+  [metric-id]
+  {:database (mt/id)
+   :lib/type :mbql/query
+   :stages
+   [{:lib/type :mbql.stage/mbql
+     :source-table (mt/id :orders)
+     :aggregation
+     [[:metric {:lib/uuid "11111111-1111-4111-8111-111111111111"} metric-id]]
+     :breakout
+     [[:field {:base-type :type/Integer
+               :effective-type :type/Integer
+               :lib/uuid "11111111-1111-4111-8111-111111111112"}
+       (mt/id :orders :user_id)]
+      [:field {:base-type :type/DateTime
+               :effective-type :type/DateTime
+               :lib/uuid "11111111-1111-4111-8111-111111111113"}
+       (mt/id :orders :created_at)]]}
+    {:lib/type :mbql.stage/mbql
+     :aggregation
+     [[:sum-where
+       {:lib/uuid "22222222-2222-4222-8222-222222222221"}
+       [:field {:base-type :type/Float
+                :lib/uuid "22222222-2222-4222-8222-222222222222"}
+        "sum"]
+       [:and {:lib/uuid "22222222-2222-4222-8222-222222222223"}
+        [:>= {:lib/uuid "22222222-2222-4222-8222-222222222224"}
+         [:field {:base-type :type/DateTime
+                  :lib/uuid "22222222-2222-4222-8222-222222222225"}
+          "created_at"]
+         "2026-05-01T00:00:00"]
+        [:< {:lib/uuid "22222222-2222-4222-8222-222222222226"}
+         [:field {:base-type :type/DateTime
+                  :lib/uuid "22222222-2222-4222-8222-222222222227"}
+          "created_at"]
+         "2026-06-01T00:00:00"]]]
+      [:sum-where
+       {:lib/uuid "22222222-2222-4222-8222-222222222228"}
+       [:field {:base-type :type/Float
+                :lib/uuid "22222222-2222-4222-8222-222222222229"}
+        "sum"]
+       [:and {:lib/uuid "22222222-2222-4222-8222-222222222230"}
+        [:>= {:lib/uuid "22222222-2222-4222-8222-222222222231"}
+         [:field {:base-type :type/DateTime
+                  :lib/uuid "22222222-2222-4222-8222-222222222232"}
+          "created_at"]
+         "2026-06-01T00:00:00"]
+        [:< {:lib/uuid "22222222-2222-4222-8222-222222222233"}
+         [:field {:base-type :type/DateTime
+                  :lib/uuid "22222222-2222-4222-8222-222222222234"}
+          "created_at"]
+         "2026-07-01T00:00:00"]]]]
+     :breakout
+     [[:field {:base-type :type/Integer
+               :lib/uuid "22222222-2222-4222-8222-222222222235"}
+       "user_id"]]}
+    {:lib/type :mbql.stage/mbql
+     :expressions
+     [[:-
+       {:lib/expression-name "period_delta"
+        :lib/uuid "33333333-3333-4333-8333-333333333331"}
+       [:field {:base-type :type/Float
+                :lib/uuid "33333333-3333-4333-8333-333333333332"}
+        "sum_where_sum_2"]
+       [:field {:base-type :type/Float
+                :lib/uuid "33333333-3333-4333-8333-333333333333"}
+        "sum_where_sum"]]]
+     :fields
+     [[:field {:base-type :type/Integer
+               :lib/uuid "33333333-3333-4333-8333-333333333334"}
+       "user_id"]
+      [:field {:base-type :type/Float
+               :lib/uuid "33333333-3333-4333-8333-333333333335"}
+       "sum_where_sum"]
+      [:field {:base-type :type/Float
+               :lib/uuid "33333333-3333-4333-8333-333333333336"}
+       "sum_where_sum_2"]
+      [:expression {:lib/uuid "33333333-3333-4333-8333-333333333337"}
+       "period_delta"]]
+     :order-by
+     [[:desc
+       {:lib/uuid "33333333-3333-4333-8333-333333333338"}
+       [:expression {:lib/uuid "33333333-3333-4333-8333-333333333339"}
+        "period_delta"]]]}]})
+
+(deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "conditional-period-derived-delta"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Conditional Period Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (conditional-period-delta-query metric-id)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (let [out (observe! convo-id query-id)
+                  rank (first (:ranking out))]
+              (is (= "change" (:basis rank)))
+              (is (= "metric" (get-in rank [:target :kind])))
+              (is (= metric-id
+                     (get-in rank [:target :metabase_metric_id])))
+              (is (= metric-entity-id
+                     (get-in rank [:target :metabase_metric_entity_id]))))))))))
+
 (deftest r5-change-ranking-observability-contract-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
