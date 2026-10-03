@@ -44,7 +44,25 @@ jobs:
         uses: ./.github/actions/prepare-backend
         with:
           java-version: "25"
-      - name: Run R5 change-ranking observability proof
+      - name: Run bounded dima.9 lifecycle and observability regression
         run: >-
           clojure -X:dev:ci:test:oss:oss-dev
-          :only '[metabase.dima.native-material-observation-test]'
+          :only '[metabase.metabot.agent.profiles-test
+                   metabase.metabot.agent.core-test
+                   metabase.metabot.api-test
+                   metabase.metabot.tools.construct-representations-test
+                   metabase.dima.native-attestation-test
+                   metabase.dima.native-material-observation-test
+                   metabase.dima.api-test
+                   metabase.dima.native-execution-test
+                   metabase.dima.execution-api-contract-test]'
+      - name: Require bounded Dima namespaces
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.metabot.agent.profiles
+                       'metabase.metabot.agent.core
+                       'metabase.metabot.api
+                       'metabase.dima.native-occurrence
+                       'metabase.dima.native-material-observation
+                       'metabase.dima.native-attestation
+                       'metabase.dima.native-execution)"
