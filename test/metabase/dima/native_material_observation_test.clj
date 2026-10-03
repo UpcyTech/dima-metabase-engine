@@ -569,6 +569,104 @@
             (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
                    (exception-code #(observe! convo-id query-id))))))))))
 
+
+(defn- previous-stage-column
+  [query pred]
+  (first (filter pred (lib/visible-columns query))))
+
+(defn- period-pair-derived-change-query
+  [metric-id]
+  (let [mp         (mt/metadata-provider)
+        orders     (lib.metadata/table mp (mt/id :orders))
+        entity     (lib.metadata/field mp (mt/id :orders :user_id))
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
+        metric     (lib.metadata/metric mp metric-id)
+        stage0     (-> (lib/query mp orders)
+                       (lib/breakout entity)
+                       (lib/breakout created-at)
+                       (lib/aggregate metric))
+        stage1     (lib/append-stage stage0)
+        visible1   (lib/visible-columns stage1)
+        entity1    (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :user_id) (:id %)))
+        date1      (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :created_at) (:id %)))
+        metric1    (previous-stage-column
+                    stage1
+                    #(and (= :source/previous-stage (:lib/source %))
+                          (nil? (:id %))
+                          (not (:lib/breakout? %))))
+        may-start  (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
+        june-start (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
+        july-start (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
+        baseline   (lib/with-expression-name
+                    (lib/sum-where
+                     metric1
+                     (lib/and (lib/>= date1 may-start)
+                              (lib/< date1 june-start)))
+                    "Baseline Total")
+        comparison (lib/with-expression-name
+                    (lib/sum-where
+                     metric1
+                     (lib/and (lib/>= date1 june-start)
+                              (lib/< date1 july-start)))
+                    "Comparison Total")
+        stage1a    (-> stage1
+                       (lib/aggregate baseline)
+                       (lib/aggregate comparison)
+                       (lib/breakout entity1))
+        stage2     (lib/append-stage stage1a)
+        baseline2  (previous-stage-column
+                    stage2
+                    #(= "Baseline Total" (:display-name %)))
+        compare2   (previous-stage-column
+                    stage2
+                    #(= "Comparison Total" (:display-name %)))
+        delta-name "Period Delta"
+        stage2a    (lib/expression stage2 delta-name (lib/- compare2 baseline2))]
+    (lib/order-by stage2a (lib/expression-ref stage2a delta-name) :desc)))
+
+(deftest r5-period-pair-derived-change-ranking-observability-contract-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "period-pair-derived-change-ranking"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Period Pair Change Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (period-pair-derived-change-query metric-id)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            ;; Legal alternative CHANGE material: two disjoint period
+            ;; aggregations over one governed metric, followed by comparison -
+            ;; baseline and ordering by that derived value. The observer must
+            ;; recover the stable governed metric identity structurally.
+            (let [out (observe! convo-id query-id)
+                  rank (last (:ranking out))]
+              (is (= "change" (:basis rank)))
+              (is (= "metric" (get-in rank [:target :kind])))
+              (is (= metric-id
+                     (get-in rank [:target :metabase_metric_id])))
+              (is (= metric-entity-id
+                     (get-in rank [:target :metabase_metric_entity_id])))
+              (is (= "desc" (:direction rank))))))))))
+
+
 (deftest r5-production-observer-has-executable-zero-p13-and-zero-execution-dependency-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
