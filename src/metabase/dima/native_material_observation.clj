@@ -85,6 +85,130 @@
                               :metabase_metric_entity_id])]))))
         metric-observations))
 
+(defn- stable-metric-identity
+  [value]
+  (when (and (map? value)
+             (= :metadata/metric (:lib/type value)))
+    (let [metric-id (:id value)
+          entity-id (:entity-id value)]
+      (when-not (and (pos-int? metric-id)
+                     (string? entity-id)
+                     (not-empty entity-id))
+        (fail! "NATIVE_MATERIAL_METRIC_IDENTITY_INVALID"
+               "Derived ranking metric has no stable Metabase id/entity-id"))
+      {:metabase_metric_id metric-id
+       :metabase_metric_entity_id entity-id})))
+
+(defn- expression-parts?
+  [value]
+  (and (map? value)
+       (= :mbql/expression-parts (:lib/type value))))
+
+(defn- same-metric?
+  [left right]
+  (and left right (= left right)))
+
+(defn- previous-period-metric
+  [value]
+  (when (and (expression-parts? value)
+             (= :offset (:operator value)))
+    (let [[metric offset & more] (:args value)
+          identity (stable-metric-identity metric)]
+      (when (and (empty? more)
+                 (= -1 offset)
+                 identity)
+        identity))))
+
+(defn- ratio-to-previous-period-metric
+  [value]
+  (when (and (expression-parts? value)
+             (= :/ (:operator value)))
+    (let [[current previous & more] (:args value)
+          current-id (stable-metric-identity current)
+          previous-id (previous-period-metric previous)]
+      (when (and (empty? more)
+                 (same-metric? current-id previous-id))
+        current-id))))
+
+(defn- absolute-change-metric
+  [value]
+  (when (and (expression-parts? value)
+             (= :- (:operator value)))
+    (let [[current previous & more] (:args value)
+          current-id (stable-metric-identity current)
+          previous-id (previous-period-metric previous)]
+      (when (and (empty? more)
+                 (same-metric? current-id previous-id))
+        current-id))))
+
+(defn- percentage-change-metric
+  [value]
+  (when (and (expression-parts? value)
+             (= :- (:operator value)))
+    (let [[ratio one & more] (:args value)
+          ratio-id (ratio-to-previous-period-metric ratio)]
+      (when (and (empty? more)
+                 ratio-id
+                 (number? one)
+                 (= 1.0 (double one)))
+        ratio-id))))
+
+(defn- delta-over-previous-metric
+  [value]
+  (when (and (expression-parts? value)
+             (= :/ (:operator value)))
+    (let [[delta previous & more] (:args value)
+          delta-id (absolute-change-metric delta)
+          previous-id (previous-period-metric previous)]
+      (when (and (empty? more)
+                 (same-metric? delta-id previous-id))
+        delta-id))))
+
+(declare change-ranking-metric)
+
+(defn- scaled-change-metric
+  [value]
+  (when (and (expression-parts? value)
+             (= :* (:operator value)))
+    (let [[left right & more] (:args value)
+          left-id (change-ranking-metric left)
+          right-id (change-ranking-metric right)
+          scalar-left? (and (number? left) (= 100.0 (double left)))
+          scalar-right? (and (number? right) (= 100.0 (double right)))]
+      (when (empty? more)
+        (cond
+          (and left-id scalar-right?) left-id
+          (and right-id scalar-left?) right-id
+          :else nil)))))
+
+(defn- change-ranking-metric
+  "Return the one governed metric identity for a structurally provable
+  period-over-period change expression. This is observation only; it never
+  rewrites or executes the query."
+  [value]
+  (or (absolute-change-metric value)
+      (percentage-change-metric value)
+      (delta-over-previous-metric value)
+      (scaled-change-metric value)))
+
+(defn- change-ranking-index
+  [query]
+  (into {}
+        (mapcat
+         (fn [stage-number]
+           (keep-indexed
+            (fn [aggregation-index aggregation]
+              (let [parts (lib/expression-parts query stage-number aggregation)
+                    metric (change-ranking-metric parts)
+                    metadata (nth (or (lib/aggregations-metadata query stage-number) [])
+                                  aggregation-index
+                                  nil)
+                    source-uuid (:lib/source-uuid metadata)]
+                (when (and metric source-uuid)
+                  [[stage-number source-uuid] metric])))
+            (or (lib/aggregations query stage-number) [])))
+         (stage-numbers query))))
+
 (defn- breakout-dimensions [query]
   (vec
    (mapcat
@@ -205,7 +329,7 @@
        (remove :temporal)
        (mapv #(dissoc % :temporal))))
 
-(defn- ranking-observations [query metric-index]
+(defn- ranking-observations [query metric-index change-index]
   (vec
    (mapcat
     (fn [stage-number]
@@ -222,11 +346,17 @@
            (let [column (get by-position index)
                  info   (lib/display-info query stage-number order-by)
                  direction (:direction info)
-                 metric (when column
-                          (get metric-index
-                               [stage-number (:lib/source-uuid column)]))
+                 source-key (when column
+                              [stage-number (:lib/source-uuid column)])
+                 change-metric (when source-key
+                                 (get change-index source-key))
+                 metric (when source-key
+                          (get metric-index source-key))
                  field-id (:id column)
                  target (cond
+                          change-metric
+                          (assoc change-metric :kind "metric")
+
                           metric
                           (assoc metric :kind "metric")
 
@@ -248,7 +378,8 @@
              (cond-> {:stage_number stage-number
                       :order_index index
                       :target target
-                      :direction (name direction)}
+                      :direction (name direction)
+                      :basis (if change-metric "change" "level")}
                (some? limit-value) (assoc :limit limit-value))))
          order-bys)))
     (stage-numbers query))))
@@ -284,8 +415,9 @@
         fingerprint     (dima.occurrence/exact-query-fingerprint original)
         metrics         (metric-observations original)
         metric-index    (metric-ranking-index original metrics)
+        change-index    (change-ranking-index original)
         filters         (filter-observations original)
-        ranking         (ranking-observations original metric-index)
+        ranking         (ranking-observations original metric-index change-index)
         breakouts       (breakout-dimensions original)
         dimensions      (vec (distinct
                               (concat breakouts
