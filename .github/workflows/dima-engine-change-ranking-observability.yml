@@ -27,7 +27,19 @@ jobs:
           set -euo pipefail
           BASE=d5c60dc9f37a9ec9c5b0117f178146bbcb8dca88
           git merge-base --is-ancestor "$BASE" HEAD
-          test -z "$(git diff --name-only "$BASE"..HEAD -- 'src/**')"
+          python - <<'PY'
+          import subprocess
+          base = "d5c60dc9f37a9ec9c5b0117f178146bbcb8dca88"
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**"],
+                  text=True,
+              ).splitlines()
+          )
+          expected = {"src/metabase/dima/native_material_observation.clj"}
+          assert changed == expected, (changed, expected)
+          print("production_source_diff=" + ",".join(sorted(changed)))
+          PY
       - name: Prepare backend
         uses: ./.github/actions/prepare-backend
         with:
