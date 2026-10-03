@@ -1,0 +1,57 @@
+name: dima-engine-dima11-equality-hotfix-proof
+
+on:
+  push:
+    branches:
+      - hotfix/dima11-equality-period-observer
+    paths:
+      - "test/metabase/dima/native_material_observation_test.clj"
+      - ".github/workflows/dima-engine-dima11-equality-hotfix-proof.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 8
+
+      - name: Prove exact certified dima.11 base and zero production diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=f8ba5cf32d265f1d4210ac8513bf273df7f44e60
+          git cat-file -e "$BASE^{commit}" 2>/dev/null || \
+            git fetch --no-tags --depth=1 origin "$BASE"
+          python - <<'PY'
+          import subprocess
+          base = "f8ba5cf32d265f1d4210ac8513bf273df7f44e60"
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**"],
+                  text=True,
+              ).splitlines()
+          )
+          assert changed == set(), changed
+          print("production_source_diff=NONE")
+          PY
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run exact live-shape observer reproducer
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-material-observation-test]'
+
+      - name: Require certified observer namespace
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.dima.native-material-observation)"
