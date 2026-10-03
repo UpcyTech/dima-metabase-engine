@@ -135,8 +135,8 @@
         upper    (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)]
     (-> (lib/query mp (lib.metadata/table mp (mt/id :checkins)))
         (lib/aggregate (lib/count))
-        (lib/filter (lib/>= date-col lower))
-        (lib/filter (lib/< date-col upper)))))
+        (lib/filter (lib/>= date-col (lower)))
+        (lib/filter (lib/< date-col (upper))))))
 
 (defn- v3-persisted-absolute-date-query []
   ;; Frozen provider-free equivalent of the V3 occurrence class: the persisted
@@ -591,15 +591,15 @@
               metric (lib.metadata/metric mp metric-id)
               entity-col (lib.metadata/field mp (mt/id :orders :user_id))
               date-col (lib.metadata/field mp (mt/id :orders :created_at))
-              lower (lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
-              split (lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
-              upper (lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
+              lower #(lib/absolute-datetime (LocalDate/parse "2026-05-01") :day)
+              split #(lib/absolute-datetime (LocalDate/parse "2026-06-01") :day)
+              upper #(lib/absolute-datetime (LocalDate/parse "2026-07-01") :day)
               stage0 (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
                          (lib/breakout entity-col)
                          (lib/breakout date-col)
                          (lib/aggregate metric)
-                         (lib/filter (lib/>= date-col lower))
-                         (lib/filter (lib/< date-col upper)))
+                         (lib/filter (lib/>= date-col (lower)))
+                         (lib/filter (lib/< date-col (upper))))
               stage1-base (lib/append-stage stage0)
               stage1-cols (lib/aggregable-columns stage1-base nil)
               stage1-entity (some #(when (= (mt/id :orders :user_id) (:id %)) %) stage1-cols)
@@ -614,13 +614,13 @@
                          (lib/aggregate
                           (lib/sum-where
                            stage1-metric
-                           (lib/and (lib/>= stage1-date lower)
-                                    (lib/< stage1-date split))))
+                           (lib/and (lib/>= stage1-date (lower))
+                                    (lib/< stage1-date (split)))))
                          (lib/aggregate
                           (lib/sum-where
                            stage1-metric
-                           (lib/and (lib/>= stage1-date split)
-                                    (lib/< stage1-date upper)))))
+                           (lib/and (lib/>= stage1-date (split))
+                                    (lib/< stage1-date (upper))))))
               stage2-base (lib/append-stage query1)
               stage2-cols (lib/expressionable-columns stage2-base nil)
               stage2-values (vec
