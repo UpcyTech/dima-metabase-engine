@@ -470,7 +470,7 @@
           (is (= {:metabase_metric_id metric-id
                   :metabase_metric_entity_id metric-entity-id}
                  change)
-              (pr-str change))))))))
+              (pr-str change)))))))
 
 (deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
   (mt/test-driver :h2
