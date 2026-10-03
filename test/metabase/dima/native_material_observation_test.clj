@@ -431,6 +431,43 @@
      (lib/fresh-uuids
       (lib/order-by q2 (lib/expression-ref q2 "period_delta") :desc)))))
 
+(deftest r5-conditional-period-lineage-index-contract-test
+  (mt/test-driver :h2
+    (let [mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id}
+         {:name "R5 Conditional Lineage Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (conditional-period-delta-query metric-id)
+              metric-observations-var
+              (ns-resolve 'metabase.dima.native-material-observation
+                          'metric-observations)
+              metric-source-index-var
+              (ns-resolve 'metabase.dima.native-material-observation
+                          'metric-source-index)
+              conditional-period-index-var
+              (ns-resolve 'metabase.dima.native-material-observation
+                          'conditional-period-index)
+              conditional-change-index-var
+              (ns-resolve 'metabase.dima.native-material-observation
+                          'conditional-change-ranking-index)
+              metrics (metric-observations-var query)
+              metric-sources (metric-source-index-var query metrics)
+              periods (conditional-period-index-var query metric-sources)
+              changes (conditional-change-index-var query metrics)]
+          (is (= 1 (count metrics)) (pr-str metrics))
+          (is (= 1 (count metric-sources)) (pr-str metric-sources))
+          (is (= 2 (count periods)) (pr-str periods))
+          (is (= 1 (count changes)) (pr-str changes))))))))
+
 (deftest r5-conditional-period-aggregate-derived-delta-ranking-observability-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
