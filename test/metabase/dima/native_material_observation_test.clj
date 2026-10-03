@@ -6,6 +6,7 @@
    [metabase.dima.native-material-observation :as dima.material]
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
+   [metabase.lib.filter :as lib.filter]
    [metabase.query-processor :as qp]
    [metabase.lib.metadata :as lib.metadata]
    [metabase.metabot.persistence :as metabot.persistence]
@@ -868,3 +869,90 @@
         (observe! convo-id query-id)
         (let [after (dima.occurrence/load-occurrence! convo-id query-id)]
           (is (= before (dima.occurrence/exact-query-fingerprint (:query after)))))))))
+
+
+(defn- period-pair-equality-derived-query
+  [metric-id]
+  (let [mp         (mt/metadata-provider)
+        orders     (lib.metadata/table mp (mt/id :orders))
+        entity     (lib.metadata/field mp (mt/id :orders :user_id))
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
+        metric     (lib.metadata/metric mp metric-id)
+        stage0     (-> (lib/query mp orders)
+                       (lib/breakout entity)
+                       (lib/breakout (lib/with-temporal-bucket created-at :month))
+                       (lib/aggregate metric))
+        stage1     (lib/append-stage stage0)
+        entity1    (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :user_id) (:id %)))
+        date1      (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :created_at) (:id %)))
+        metric1    (previous-stage-column
+                    stage1
+                    #(and (= :source/previous-stage (:lib/source %))
+                          (nil? (:id %))
+                          (not (:lib/breakout? %))))
+        baseline   (lib/with-expression-name
+                    (lib/sum-where
+                     metric1
+                     (lib.filter/filter-clause := date1 "2026-05-01T00:00:00"))
+                    "Baseline Total")
+        comparison (lib/with-expression-name
+                    (lib/sum-where
+                     metric1
+                     (lib.filter/filter-clause := date1 "2026-06-01T00:00:00"))
+                    "Comparison Total")
+        stage1a    (-> stage1
+                       (lib/aggregate baseline)
+                       (lib/aggregate comparison)
+                       (lib/breakout entity1))
+        stage2     (lib/append-stage stage1a)
+        baseline2  (previous-stage-column
+                    stage2
+                    #(= "Baseline Total" (:display-name %)))
+        compare2   (previous-stage-column
+                    stage2
+                    #(= "Comparison Total" (:display-name %)))
+        delta-name "Period Delta"
+        stage2a    (lib/expression stage2 delta-name (lib/- compare2 baseline2))]
+    (lib/order-by stage2a (lib/expression-ref stage2a delta-name) :desc)))
+
+(deftest r5-live-shape-month-bucket-equality-period-pair-change-reproducer-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "live-shape-month-bucket-equality-period-pair"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Equality Period Pair Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (period-pair-equality-derived-query metric-id)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            ;; Exact live structural family: month-bucketed previous-stage date,
+            ;; one equality-selected aggregate per period, comparison - baseline,
+            ;; then DESC ordering by the derived expression.
+            ;; Certified dima.11 should classify this legal material as CHANGE.
+            (let [out (observe! convo-id query-id)
+                  rank (last (:ranking out))]
+              (is (= "change" (:basis rank)))
+              (is (= "metric" (get-in rank [:target :kind])))
+              (is (= metric-id
+                     (get-in rank [:target :metabase_metric_id])))
+              (is (= metric-entity-id
+                     (get-in rank [:target :metabase_metric_entity_id])))
+              (is (= "desc" (:direction rank))))))))))
