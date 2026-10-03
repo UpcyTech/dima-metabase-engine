@@ -643,12 +643,19 @@
                             :query-id query-id
                             :query ranked
                             :user-id owner-id})
-            ;; Intentional dima.10 RED: this is the same generic legal family as
-            ;; the live repair -- two period-specific aggregations of one governed
-            ;; metric, then a later-stage delta ranked DESC. Current dima.10 only
-            ;; observes the Offset family and cannot yet prove this lineage.
-            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
-                   (exception-code #(observe! convo-id query-id))))))))))
+            ;; Desired generic law: two non-overlapping ordered period aggregations
+            ;; of the same governed metric, followed by comparison-baseline and
+            ;; ordered by that derived expression, is structurally observable as
+            ;; CHANGE without relying on expression/display names.
+            (let [observation (observe! convo-id query-id)
+                  ranking (:ranking observation)]
+              (is (= 1 (count ranking)))
+              (is (= {:kind "metric"
+                      :metabase_metric_id metric-id
+                      :metabase_metric_entity_id metric-entity-id}
+                     (:target (first ranking))))
+              (is (= "desc" (:direction (first ranking))))
+              (is (= "change" (:basis (first ranking)))))))))))
 
 (deftest r5-production-observer-has-executable-zero-p13-and-zero-execution-dependency-test
   (mt/test-driver :h2
