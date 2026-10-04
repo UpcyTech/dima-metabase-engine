@@ -1042,7 +1042,32 @@
           :database_id (mt/id)
           :table_id (mt/id :orders)
           :dataset_query definition}]
-        (let [query (live-unnamed-equality-period-pair-query metric-id)]
+        (let [query (live-unnamed-equality-period-pair-query metric-id)
+              order-by (first (lib/order-bys query 2))
+              target (nth order-by 2 nil)
+              resolved (if (and (vector? target)
+                                (= :expression (first target)))
+                         (lib.expression/resolve-expression query 2 (last target))
+                         target)
+              parts (lib/expression-parts query 2 resolved)
+              _ (println
+                 "DIMA11P1_UNNAMED_EXPR_TRACE"
+                 (pr-str
+                  {:order-by order-by
+                   :target target
+                   :resolved resolved
+                   :parts parts
+                   :args (mapv #(if (map? %)
+                                  (select-keys %
+                                               [:display-name
+                                                :name
+                                                :lib/source
+                                                :lib/source-uuid
+                                                :lib/source-column-alias
+                                                :lib/desired-column-alias
+                                                :id])
+                                  %)
+                               (:args parts))}))]
           (mt/with-current-user owner-id
             (persist-turn! {:conversation-id convo-id
                             :query-id query-id
