@@ -6,6 +6,7 @@
    [metabase.dima.native-material-observation :as dima.material]
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.lib.core :as lib]
+   [metabase.lib.expression :as lib.expression]
    [metabase.lib.filter :as lib.filter]
    [metabase.query-processor :as qp]
    [metabase.lib.metadata :as lib.metadata]
