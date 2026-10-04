@@ -1225,4 +1225,4 @@
             (let [rank (last (:ranking (observe! convo-id query-id)))]
               (is (= "change" (:basis rank)))
               (is (= "desc" (:direction rank)))
-              (is (= "metric" (get-in rank [:target :kind])))))))))))
+              (is (= "metric" (get-in rank [:target :kind]))))))))))
