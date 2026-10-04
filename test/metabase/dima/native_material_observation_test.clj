@@ -1042,7 +1042,7 @@
           :database_id (mt/id)
           :table_id (mt/id :orders)
           :dataset_query definition}]
-        (let [query (live-unnamed-equality-period-pair-query metric-id)
+        (let [query (live-unnamed-equality-period-pair-query metric-id)]
           (mt/with-current-user owner-id
             (persist-turn! {:conversation-id convo-id
                             :query-id query-id
