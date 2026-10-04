@@ -1,0 +1,57 @@
+name: dima-engine-dima11p2-live-case-sum-reproducer
+
+on:
+  push:
+    branches:
+      - test/dima11p2-live-case-sum-reproducer
+    paths:
+      - "test/metabase/dima/native_material_observation_test.clj"
+      - ".github/workflows/dima-engine-dima11p2-live-case-sum-reproducer.yml"
+
+permissions:
+  contents: read
+
+env:
+  CERTIFIED_DIMA11P2_SHA: 72992664803783ef437be8d944c0555a30ef211b
+
+jobs:
+  reproducer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 32
+
+      - name: Prove production source is exact certified dima.11.1.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$CERTIFIED_DIMA11P2_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$CERTIFIED_DIMA11P2_SHA"
+          python - <<'PY'
+          import os, subprocess
+          base = os.environ["CERTIFIED_DIMA11P2_SHA"]
+          changed = set(subprocess.check_output(
+              ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**", "resources/**"],
+              text=True,
+          ).splitlines())
+          assert changed == set(), changed
+          print("production_source_diff=EMPTY")
+          PY
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run exact live CASE-SUM observer reproducer
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-material-observation-test]'
+
+      - name: Require observer namespace
+        if: always()
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.dima.native-material-observation)"
