@@ -309,31 +309,44 @@
   (or (half-open-temporal-interval predicate)
       (bucketed-temporal-equality-interval predicate)))
 
+(defn- unique-source-uuid-match
+  [source-uuid candidates]
+  (when source-uuid
+    (let [matches (vec
+                   (filter
+                    #(= source-uuid (:lib/source-uuid %))
+                    candidates))]
+      (when (= 1 (count matches))
+        (first matches)))))
+
+(defn- canonical-previous-stage-source-uuid
+  [query stage-number column]
+  (when-let [source-alias (:lib/source-column-alias column)]
+    (let [previous-columns (lib/returned-columns query (dec stage-number))
+          alias-matches
+          (vec
+           (filter
+            #(= source-alias (:lib/desired-column-alias %))
+            previous-columns))]
+      (when (= 1 (count alias-matches))
+        (:lib/source-uuid (first alias-matches))))))
+
 (defn- matched-previous-stage-column
   [query stage-number column candidates]
   (when (and (pos? stage-number)
              (map? column)
              (= :source/previous-stage (:lib/source column))
              (seq candidates))
-    (let [source-uuid (:lib/source-uuid column)
-          uuid-matches (when source-uuid
-                         (vec
-                          (filter
-                           #(= source-uuid (:lib/source-uuid %))
-                           candidates)))]
-      (cond
-        (= 1 (count uuid-matches))
-        (first uuid-matches)
-
-        (> (count uuid-matches) 1)
-        nil
-
-        :else
-        (lib.equality/find-matching-column
-         query
-         (dec stage-number)
-         column
-         candidates)))))
+    (or
+     (unique-source-uuid-match (:lib/source-uuid column) candidates)
+     (unique-source-uuid-match
+      (canonical-previous-stage-source-uuid query stage-number column)
+      candidates)
+     (lib.equality/find-matching-column
+      query
+      (dec stage-number)
+      column
+      candidates))))
 
 (defn- previous-stage-aggregation
   [query stage-number column]
