@@ -3,7 +3,7 @@ name: dima-engine-change-ranking-observability
 on:
   push:
     branches:
-      - test/dima9-change-ranking-observability
+      - test/dima11p1-live-stage2-change-reproducer
     paths:
       - "test/metabase/dima/native_material_observation_test.clj"
       - "src/metabase/dima/native_material_observation.clj"
