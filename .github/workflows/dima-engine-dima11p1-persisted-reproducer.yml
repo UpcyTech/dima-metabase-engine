@@ -1,0 +1,51 @@
+name: dima-engine-dima11p1-persisted-reproducer
+
+on:
+  push:
+    branches:
+      - test/dima11p1-live-persisted-shape
+    paths:
+      - "test/metabase/dima/native_material_observation_test.clj"
+      - ".github/workflows/dima-engine-dima11p1-persisted-reproducer.yml"
+
+permissions:
+  contents: read
+
+env:
+  CERTIFIED_SHA: 4c49b8da6b424b0fa4d8ef340ca1b238d12980c1
+
+jobs:
+  reproducer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 32
+
+      - name: Prove zero production diff from certified runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$CERTIFIED_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$CERTIFIED_SHA"
+          python - <<'PY'
+          import os, subprocess
+          base = os.environ["CERTIFIED_SHA"]
+          changed = set(subprocess.check_output(
+              ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**", "resources/**"],
+              text=True,
+          ).splitlines())
+          assert changed == set(), changed
+          print("production_source_diff=NONE")
+          PY
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run exact serialized observer reproducer
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-material-observation-test]'
