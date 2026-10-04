@@ -315,11 +315,25 @@
              (map? column)
              (= :source/previous-stage (:lib/source column))
              (seq candidates))
-    (lib.equality/find-matching-column
-     query
-     (dec stage-number)
-     column
-     candidates)))
+    (let [source-uuid (:lib/source-uuid column)
+          uuid-matches (when source-uuid
+                         (vec
+                          (filter
+                           #(= source-uuid (:lib/source-uuid %))
+                           candidates)))]
+      (cond
+        (= 1 (count uuid-matches))
+        (first uuid-matches)
+
+        (> (count uuid-matches) 1)
+        nil
+
+        :else
+        (lib.equality/find-matching-column
+         query
+         (dec stage-number)
+         column
+         candidates)))))
 
 (defn- previous-stage-aggregation
   [query stage-number column]
