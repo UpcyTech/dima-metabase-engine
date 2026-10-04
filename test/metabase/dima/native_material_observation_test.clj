@@ -1120,3 +1120,109 @@
                             :user-id owner-id})
             (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
                    (exception-code #(observe! convo-id query-id))))))))))
+
+
+(defn- live-case-sum-period-pair-query
+  [metric-id]
+  (let [mp         (mt/metadata-provider)
+        orders     (lib.metadata/table mp (mt/id :orders))
+        entity     (lib.metadata/field mp (mt/id :orders :user_id))
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
+        metric     (lib.metadata/metric mp metric-id)
+        stage0     (-> (lib/query mp orders)
+                       (lib/breakout entity)
+                       (lib/breakout created-at)
+                       (lib/aggregate metric)
+                       (lib/filter (lib/>= created-at "2026-05-01T00:00:00"))
+                       (lib/filter (lib/< created-at "2026-07-01T00:00:00")))
+        stage1     (lib/append-stage stage0)
+        entity1    (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :user_id) (:id %)))
+        date1      (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :created_at) (:id %)))
+        metric1    (previous-stage-column
+                    stage1
+                    #(and (= :source/previous-stage (:lib/source %))
+                          (nil? (:id %))
+                          (not (:lib/breakout? %))))
+        baseline-name "Baseline Window"
+        comparison-name "Comparison Window"
+        baseline-expr
+        (lib/case
+         [[(lib/and (lib/>= date1 "2026-05-01T00:00:00")
+                    (lib/< date1 "2026-06-01T00:00:00"))
+           metric1]]
+         0)
+        comparison-expr
+        (lib/case
+         [[(lib/and (lib/>= date1 "2026-06-01T00:00:00")
+                    (lib/< date1 "2026-07-01T00:00:00"))
+           metric1]]
+         0)
+        stage1a    (-> stage1
+                       (lib/expression baseline-name baseline-expr)
+                       (lib/expression comparison-name comparison-expr)
+                       (lib/with-fields [entity1]))
+        stage2     (lib/append-stage stage1a)
+        visible2   (lib/visible-columns stage2)
+        entity2    (previous-stage-column
+                    stage2
+                    #(= (mt/id :orders :user_id) (:id %)))
+        baseline2  (previous-stage-column
+                    stage2
+                    #(= baseline-name (:display-name %)))
+        comparison2 (previous-stage-column
+                     stage2
+                     #(= comparison-name (:display-name %)))
+        stage2a    (-> stage2
+                       (lib/aggregate (lib/sum baseline2))
+                       (lib/aggregate (lib/sum comparison2))
+                       (lib/breakout entity2))
+        stage3     (lib/append-stage stage2a)
+        aggregate-cols
+        (vec
+         (filter
+          #(and (= :source/previous-stage (:lib/source %))
+                (nil? (:id %))
+                (not (:lib/breakout? %)))
+          (lib/visible-columns stage3)))
+        baseline3  (first aggregate-cols)
+        comparison3 (second aggregate-cols)
+        delta-name "Derived Period Delta"
+        stage3a    (lib/expression stage3 delta-name (lib/- comparison3 baseline3))]
+    (lib/order-by stage3a (lib/expression-ref stage3a delta-name) :desc)))
+
+(deftest r5-live-case-then-sum-period-pair-change-reproducer-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "live-case-then-sum-period-pair-change"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id}
+         {:name "R5 Live Case Sum Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (live-case-sum-period-pair-query metric-id)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            ;; Exact structural family emitted by the current Metabot live path:
+            ;; CASE each governed period -> SUM each case column -> comparison-baseline
+            ;; -> ORDER BY derived delta. Certified dima.11.1.2 must either prove
+            ;; this as CHANGE or this reproducer remains intentionally RED.
+            (let [rank (last (:ranking (observe! convo-id query-id)))]
+              (is (= "change" (:basis rank)))
+              (is (= "desc" (:direction rank)))
+              (is (= "metric" (get-in rank [:target :kind])))))))))))
