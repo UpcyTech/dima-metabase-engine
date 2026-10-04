@@ -1,0 +1,63 @@
+name: dima-engine-dima11p1-focused
+
+on:
+  push:
+    branches:
+      - release/r11p1-dima11-equality-period-observer
+    paths:
+      - "src/metabase/dima/native_material_observation.clj"
+      - "test/metabase/dima/native_material_observation_test.clj"
+      - ".dima/release.json"
+      - ".github/workflows/dima-engine-dima11p1-focused.yml"
+
+permissions:
+  contents: read
+
+env:
+  DIMA11_SHA: f8ba5cf32d265f1d4210ac8513bf273df7f44e60
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 64
+
+      - name: Prove exact dima.11 production delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "$DIMA11_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$DIMA11_SHA"
+          python - <<'PY'
+          import os, subprocess
+          base = os.environ["DIMA11_SHA"]
+          changed = set(subprocess.check_output(
+              ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**", "resources/**"],
+              text=True,
+          ).splitlines())
+          expected = {"src/metabase/dima/native_material_observation.clj"}
+          assert changed == expected, (changed, expected)
+          print("dima11_to_dima11p1_production_delta=" + ",".join(sorted(changed)))
+          PY
+
+      - name: Prepare backend
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: "25"
+
+      - name: Run bounded observer and lifecycle regressions
+        run: >-
+          clojure -X:dev:ci:test:oss:oss-dev
+          :only '[metabase.dima.native-material-observation-test
+                   metabase.dima.native-attestation-test
+                   metabase.dima.api-test
+                   metabase.dima.native-execution-test
+                   metabase.dima.execution-api-contract-test]'
+
+      - name: Require observer namespace
+        run: >-
+          clojure -M:dev:oss:oss-dev
+          -e "(require 'metabase.dima.native-material-observation)"
