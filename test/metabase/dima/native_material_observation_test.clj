@@ -1022,42 +1022,6 @@
                     stage2
                     delta-name
                     (lib/- comparison2 baseline2))
-        _          (println
-                    "DIMA11P1_UNNAMED_TRACE"
-                    (pr-str
-                     {:stage1-aggregations
-                      (lib/aggregations-metadata stage1a 1)
-                      :stage2-visible
-                      (mapv #(select-keys %
-                                          [:display-name
-                                           :name
-                                           :lib/source
-                                           :lib/source-uuid
-                                           :lib/source-column-alias
-                                           :lib/desired-column-alias
-                                           :lib/breakout?
-                                           :id])
-                            (lib/visible-columns stage2))
-                      :baseline2
-                      (select-keys baseline2
-                                   [:display-name
-                                    :name
-                                    :lib/source
-                                    :lib/source-uuid
-                                    :lib/source-column-alias
-                                    :lib/desired-column-alias
-                                    :lib/breakout?
-                                    :id])
-                      :comparison2
-                      (select-keys comparison2
-                                   [:display-name
-                                    :name
-                                    :lib/source
-                                    :lib/source-uuid
-                                    :lib/source-column-alias
-                                    :lib/desired-column-alias
-                                    :lib/breakout?
-                                    :id])}))]
     (lib/order-by stage2a (lib/expression-ref stage2a delta-name) :desc)))
 
 (deftest r5-live-unnamed-equality-period-pair-change-reproducer-test
