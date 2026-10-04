@@ -968,6 +968,96 @@
 
 
 
+
+
+(defn- live-unnamed-equality-period-pair-query
+  [metric-id]
+  (let [mp         (mt/metadata-provider)
+        orders     (lib.metadata/table mp (mt/id :orders))
+        entity     (lib.metadata/field mp (mt/id :orders :user_id))
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
+        month-ref  (lib/with-temporal-bucket created-at :month)
+        metric     (lib.metadata/metric mp metric-id)
+        stage0     (-> (lib/query mp orders)
+                       (lib/breakout entity)
+                       (lib/breakout month-ref)
+                       (lib/aggregate metric)
+                       (lib/filter (lib/>= created-at "2026-05-01"))
+                       (lib/filter (lib/< created-at "2026-07-01")))
+        stage1     (lib/append-stage stage0)
+        visible1   (lib/visible-columns stage1)
+        entity1    (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :user_id) (:id %)))
+        date1      (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :created_at) (:id %)))
+        metric1    (previous-stage-column
+                    stage1
+                    #(and (= :source/previous-stage (:lib/source %))
+                          (nil? (:id %))
+                          (not (:lib/breakout? %))))
+        baseline   (lib/sum-where
+                    metric1
+                    (lib.filter/filter-clause := date1 "2026-05-01"))
+        comparison (lib/sum-where
+                    metric1
+                    (lib.filter/filter-clause := date1 "2026-06-01"))
+        stage1a    (-> stage1
+                       (lib/aggregate baseline)
+                       (lib/aggregate comparison)
+                       (lib/breakout entity1))
+        stage2     (lib/append-stage stage1a)
+        aggregate-cols
+        (vec
+         (filter
+          #(and (= :source/previous-stage (:lib/source %))
+                (nil? (:id %))
+                (not (:lib/breakout? %)))
+          (lib/visible-columns stage2)))
+        baseline2  (first aggregate-cols)
+        comparison2 (second aggregate-cols)
+        delta-name "Live Unnamed Delta"
+        stage2a    (lib/expression
+                    stage2
+                    delta-name
+                    (lib/- comparison2 baseline2))]
+    (lib/order-by stage2a (lib/expression-ref stage2a delta-name) :desc)))
+
+(deftest r5-live-unnamed-equality-period-pair-change-reproducer-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "live-unnamed-equality-period-pair"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Live Unnamed Equality Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (live-unnamed-equality-period-pair-query metric-id)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (let [out (observe! convo-id query-id)
+                  rank (last (:ranking out))]
+              (is (= "change" (:basis rank)))
+              (is (= "metric" (get-in rank [:target :kind])))
+              (is (= metric-id
+                     (get-in rank [:target :metabase_metric_id])))
+              (is (= metric-entity-id
+                     (get-in rank [:target :metabase_metric_entity_id])))
+              (is (= "desc" (:direction rank))))))))))
+
 (deftest r5-equality-period-pair-same-bucket-remains-unsupported-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
