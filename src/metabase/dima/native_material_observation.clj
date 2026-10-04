@@ -287,7 +287,8 @@
           lower (when (some? scalar)
                   (temporal-order-instant scalar))
           grain (when (map? column)
-                  (lib/raw-temporal-bucket column))
+                  (or (lib/raw-temporal-bucket column)
+                      (:inherited-temporal-unit column)))
           upper (when (and lower grain)
                   (bucket-upper-instant lower grain))]
       (when (and (empty? more)
