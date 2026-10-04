@@ -1,9 +1,9 @@
-name: dima-engine-dima11p1-focused
+name: dima-engine-dima11p2-focused
 
 on:
   push:
     branches:
-      - release/r11p1-dima11-equality-period-observer
+      - release/r11p2-dima11-unnamed-period-observer
     paths:
       - "src/metabase/dima/native_material_observation.clj"
       - "test/metabase/dima/native_material_observation_test.clj"
@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  DIMA11_SHA: f8ba5cf32d265f1d4210ac8513bf273df7f44e60
+  DIMA11P1_SHA: 4c49b8da6b424b0fa4d8ef340ca1b238d12980c1
 
 jobs:
   focused:
@@ -30,17 +30,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git cat-file -e "$DIMA11_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$DIMA11_SHA"
+          git cat-file -e "$DIMA11P1_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$DIMA11P1_SHA"
           python - <<'PY'
           import os, subprocess
-          base = os.environ["DIMA11_SHA"]
+          base = os.environ["DIMA11P1_SHA"]
           changed = set(subprocess.check_output(
               ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**", "resources/**"],
               text=True,
           ).splitlines())
           expected = {"src/metabase/dima/native_material_observation.clj"}
           assert changed == expected, (changed, expected)
-          print("dima11_to_dima11p1_production_delta=" + ",".join(sorted(changed)))
+          print("dima11p1_to_dima11p2_production_delta=" + ",".join(sorted(changed)))
           PY
 
       - name: Prepare backend
