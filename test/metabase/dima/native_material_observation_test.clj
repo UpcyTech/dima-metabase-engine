@@ -968,6 +968,47 @@
 
 
 
+
+
+(deftest r5-persisted-month-bucket-equality-period-pair-change-reproducer-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "persisted-month-bucket-equality-period-pair"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id metric-entity-id :entity_id}
+         {:name "R5 Persisted Equality Period Pair Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (dima.occurrence/exact-serialized-query
+                     (period-pair-equality-derived-query
+                      metric-id
+                      "2026-05-01"
+                      "2026-06-01"
+                      true))]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (let [out (observe! convo-id query-id)
+                  rank (last (:ranking out))]
+              (is (= "change" (:basis rank)))
+              (is (= "metric" (get-in rank [:target :kind])))
+              (is (= metric-id
+                     (get-in rank [:target :metabase_metric_id])))
+              (is (= metric-entity-id
+                     (get-in rank [:target :metabase_metric_entity_id])))
+              (is (= "desc" (:direction rank))))))))))
+
 (deftest r5-equality-period-pair-same-bucket-remains-unsupported-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
