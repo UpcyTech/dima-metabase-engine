@@ -262,6 +262,52 @@
                      :upper upper}
               (pos-int? table-id) (assoc :table_id table-id))))))))
 
+(defn- bucket-upper-instant
+  [lower grain]
+  (let [zdt (.atZone ^Instant lower ZoneOffset/UTC)
+        upper
+        (case grain
+          :minute (.plusMinutes zdt 1)
+          :hour (.plusHours zdt 1)
+          :day (.plusDays zdt 1)
+          :week (.plusWeeks zdt 1)
+          :month (.plusMonths zdt 1)
+          :quarter (.plusMonths zdt 3)
+          :year (.plusYears zdt 1)
+          nil)]
+    (when upper
+      (.toInstant upper))))
+
+(defn- bucketed-temporal-equality-interval
+  [predicate]
+  (when (and (expression-parts? predicate)
+             (= := (:operator predicate)))
+    (let [[column value & more] (:args predicate)
+          scalar (single-scalar value)
+          lower (when (some? scalar)
+                  (temporal-order-instant scalar))
+          grain (when (map? column)
+                  (lib/raw-temporal-bucket column))
+          upper (when (and lower grain)
+                  (bucket-upper-instant lower grain))]
+      (when (and (empty? more)
+                 (map? column)
+                 (temporal-column? column)
+                 (pos-int? (:id column))
+                 lower
+                 upper
+                 (neg? (compare lower upper)))
+        (cond-> {:time_field_id (:id column)
+                 :lower lower
+                 :upper upper}
+          (pos-int? (:table-id column))
+          (assoc :table_id (:table-id column)))))))
+
+(defn- temporal-period-interval
+  [predicate]
+  (or (half-open-temporal-interval predicate)
+      (bucketed-temporal-equality-interval predicate)))
+
 (defn- matched-previous-stage-column
   [query stage-number column candidates]
   (when (and (pos? stage-number)
@@ -313,7 +359,7 @@
         (let [[metric-column predicate & more] (:args parts)
               metric (previous-stage-governed-metric
                       query aggregate-stage metric-index metric-column)
-              interval (half-open-temporal-interval predicate)]
+              interval (temporal-period-interval predicate)]
           (when (and (empty? more) metric interval)
             {:metric metric
              :interval interval}))))))
