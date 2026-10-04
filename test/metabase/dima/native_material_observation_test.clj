@@ -872,16 +872,25 @@
 
 
 (defn- period-pair-equality-derived-query
-  [metric-id]
-  (let [mp         (mt/metadata-provider)
-        orders     (lib.metadata/table mp (mt/id :orders))
-        entity     (lib.metadata/field mp (mt/id :orders :user_id))
-        created-at (lib.metadata/field mp (mt/id :orders :created_at))
-        metric     (lib.metadata/metric mp metric-id)
-        stage0     (-> (lib/query mp orders)
-                       (lib/breakout entity)
-                       (lib/breakout (lib/with-temporal-bucket created-at :month))
-                       (lib/aggregate metric))
+  ([metric-id]
+   (period-pair-equality-derived-query
+    metric-id
+    "2026-05-01T00:00:00"
+    "2026-06-01T00:00:00"
+    true))
+  ([metric-id baseline-value comparison-value bucketed?]
+   (let [mp         (mt/metadata-provider)
+         orders     (lib.metadata/table mp (mt/id :orders))
+         entity     (lib.metadata/field mp (mt/id :orders :user_id))
+         created-at (lib.metadata/field mp (mt/id :orders :created_at))
+         time-ref   (if bucketed?
+                      (lib/with-temporal-bucket created-at :month)
+                      created-at)
+         metric     (lib.metadata/metric mp metric-id)
+         stage0     (-> (lib/query mp orders)
+                        (lib/breakout entity)
+                        (lib/breakout time-ref)
+                        (lib/aggregate metric))
         stage1     (lib/append-stage stage0)
         entity1    (previous-stage-column
                     stage1
@@ -897,12 +906,12 @@
         baseline   (lib/with-expression-name
                     (lib/sum-where
                      metric1
-                     (lib.filter/filter-clause := date1 "2026-05-01T00:00:00"))
+                     (lib.filter/filter-clause := date1 baseline-value))
                     "Baseline Total")
         comparison (lib/with-expression-name
                     (lib/sum-where
                      metric1
-                     (lib.filter/filter-clause := date1 "2026-06-01T00:00:00"))
+                     (lib.filter/filter-clause := date1 comparison-value))
                     "Comparison Total")
         stage1a    (-> stage1
                        (lib/aggregate baseline)
@@ -917,7 +926,7 @@
                     #(= "Comparison Total" (:display-name %)))
         delta-name "Period Delta"
         stage2a    (lib/expression stage2 delta-name (lib/- compare2 baseline2))]
-    (lib/order-by stage2a (lib/expression-ref stage2a delta-name) :desc)))
+     (lib/order-by stage2a (lib/expression-ref stage2a delta-name) :desc))))
 
 (deftest r5-live-shape-month-bucket-equality-period-pair-change-reproducer-test
   (mt/test-driver :h2
@@ -956,3 +965,68 @@
               (is (= metric-entity-id
                      (get-in rank [:target :metabase_metric_entity_id])))
               (is (= "desc" (:direction rank))))))))))
+
+
+
+(deftest r5-equality-period-pair-same-bucket-remains-unsupported-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "equality-period-pair-same-bucket"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id}
+         {:name "R5 Equality Same Bucket Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (period-pair-equality-derived-query
+                     metric-id
+                     "2026-05-01T00:00:00"
+                     "2026-05-01T00:00:00"
+                     true)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                   (exception-code #(observe! convo-id query-id))))))))))
+
+
+(deftest r5-unbucketed-temporal-equality-period-pair-remains-unsupported-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "unbucketed-equality-period-pair"
+          mp0 (mt/metadata-provider)
+          orders (lib.metadata/table mp0 (mt/id :orders))
+          total (lib.metadata/field mp0 (mt/id :orders :total))
+          definition (-> (lib/query mp0 orders)
+                         (lib/aggregate (lib/sum total)))]
+      (mt/with-temp
+        [:model/Card
+         {metric-id :id}
+         {:name "R5 Equality Unbucketed Metric"
+          :type :metric
+          :database_id (mt/id)
+          :table_id (mt/id :orders)
+          :dataset_query definition}]
+        (let [query (period-pair-equality-derived-query
+                     metric-id
+                     "2026-05-01T00:00:00"
+                     "2026-06-01T00:00:00"
+                     false)]
+          (mt/with-current-user owner-id
+            (persist-turn! {:conversation-id convo-id
+                            :query-id query-id
+                            :query query
+                            :user-id owner-id})
+            (is (= "NATIVE_MATERIAL_RANKING_TARGET_UNSUPPORTED"
+                   (exception-code #(observe! convo-id query-id))))))))))
