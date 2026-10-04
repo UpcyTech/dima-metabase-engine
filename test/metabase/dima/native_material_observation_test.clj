@@ -1021,7 +1021,7 @@
         stage2a    (lib/expression
                     stage2
                     delta-name
-                    (lib/- comparison2 baseline2))
+                    (lib/- comparison2 baseline2))]
     (lib/order-by stage2a (lib/expression-ref stage2a delta-name) :desc)))
 
 (deftest r5-live-unnamed-equality-period-pair-change-reproducer-test
