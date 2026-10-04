@@ -903,6 +903,10 @@
                     #(and (= :source/previous-stage (:lib/source %))
                           (nil? (:id %))
                           (not (:lib/breakout? %))))
+        _           (println "DIMA11P1_EQUALITY_DATE_COLUMN"
+                             (pr-str date1)
+                             "RAW_BUCKET"
+                             (pr-str (lib/raw-temporal-bucket date1)))
         baseline   (lib/with-expression-name
                     (lib/sum-where
                      metric1
