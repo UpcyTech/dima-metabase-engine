@@ -7,6 +7,7 @@
    [clojure.string :as str]
    [metabase.lib.core :as lib]
    [metabase.lib.metadata :as lib.metadata]
+   [metabase.lib.walk.util :as lib.walk.util]
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.dima.native-query-compat :as dima.compat]
    [metabase.query-permissions.impl :as query-perms]
@@ -96,16 +97,20 @@
 (defn- stage-numbers [query]
   (range (lib/stage-count query)))
 
-(defn- referenced-field-ids [query stage-number clause]
-  (->> (lib/referenced-columns query stage-number clause)
-       (keep :id)
-       distinct
+(defn- referenced-field-ids
+  "Return physical field ids from one MBQL clause without interpreting scalar leaves.
+
+  Metabase expressions may contain Java scalar values (timestamps, UUIDs, etc.).
+  Clause walking is collection-aware and treats every non-clause scalar as an
+  atomic leaf, so attestation never attempts to seq arbitrary Java values."
+  [clause]
+  (->> (lib.walk.util/all-field-ids clause)
        sort
        vec))
 
 (defn- aggregation-fact [query stage-number aggregation]
   (let [{:keys [operator]} (lib/expression-parts query stage-number aggregation)
-        field-ids          (referenced-field-ids query stage-number aggregation)
+        field-ids          (referenced-field-ids aggregation)
         distinct?          (= operator :distinct)
         argument-kind      (cond
                              (and (= operator :count) (empty? field-ids)) "all_rows"
