@@ -7,7 +7,7 @@
    [clojure.string :as str]
    [metabase.lib.core :as lib]
    [metabase.lib.metadata :as lib.metadata]
-   [metabase.lib.walk.util :as lib.walk.util]
+   [metabase.lib.walk :as lib.walk]
    [metabase.dima.native-occurrence :as dima.occurrence]
    [metabase.dima.native-query-compat :as dima.compat]
    [metabase.query-permissions.impl :as query-perms]
@@ -100,13 +100,23 @@
 (defn- referenced-field-ids
   "Return physical field ids from one MBQL clause without interpreting scalar leaves.
 
-  Metabase expressions may contain Java scalar values (timestamps, UUIDs, etc.).
-  Clause walking is collection-aware and treats every non-clause scalar as an
-  atomic leaf, so attestation never attempts to seq arbitrary Java values."
+  Walk the clause directly instead of routing through expression projection.
+  Metabase's clause walker recurses only into MBQL clauses and treats arbitrary
+  non-clause values as atomic leaves, including Java temporal/UUID scalars."
   [clause]
-  (->> (lib.walk.util/all-field-ids clause)
-       sort
-       vec))
+  (let [ids (volatile! (transient #{}))]
+    (lib.walk/walk-clause
+     clause
+     (fn [value]
+       (when (and (vector? value)
+                  (= :field (first value)))
+         (let [field-id (nth value 2 nil)]
+           (when (pos-int? field-id)
+             (vswap! ids conj! field-id))))
+       nil))
+    (->> (persistent! @ids)
+         sort
+         vec)))
 
 (defn- aggregation-fact [query stage-number aggregation]
   (let [{:keys [operator]} (lib/expression-parts query stage-number aggregation)
