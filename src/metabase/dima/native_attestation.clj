@@ -161,18 +161,16 @@
   [query preprocessed native-metric-refs]
   (if (empty? native-metric-refs)
     (aggregation-facts query)
-    (let [original-count (count (aggregation-facts query))
-          expanded       (aggregation-facts preprocessed)]
-      ;; This bounded P13B seam certifies exactly one native metric aggregation.
-      ;; Do not silently pair/flatten more complex metric algebra.
-      (when-not (and (= 1 (count native-metric-refs))
-                     (= 1 original-count)
-                     (= 1 (count expanded)))
+    ;; Attestation owns structural occurrence/provenance facts, not business
+    ;; semantics. Preserve the original stable native-metric references and
+    ;; report every aggregation produced by Metabase preprocessing. Whether a
+    ;; multi-stage expansion satisfies CHANGE/ranking intent belongs to the
+    ;; material observer + Dima's canonical fulfillment verifier.
+    (let [expanded (aggregation-facts preprocessed)]
+      (when (empty? expanded)
         (fail! "NATIVE_METRIC_EXPANSION_UNSUPPORTED" 422
-               "P13B-v1 certifies one native metric aggregation only"
-               {:native-metric-reference-count (count native-metric-refs)
-                :original-aggregation-count original-count
-                :expanded-aggregation-count (count expanded)}))
+               "Native metric occurrence produced no observable aggregation facts"
+               {:native-metric-reference-count (count native-metric-refs)}))
       expanded)))
 
 (defn- breakout-fact [query stage-number breakout-index breakout]

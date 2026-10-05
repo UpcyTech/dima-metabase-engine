@@ -1,4 +1,4 @@
-name: dima-engine-dima11p1-focused
+name: dima-engine-dima11p2-focused
 
 on:
   push:
@@ -6,7 +6,9 @@ on:
       - release/r11p1-dima11-equality-period-observer
     paths:
       - "src/metabase/dima/native_material_observation.clj"
+      - "src/metabase/dima/native_attestation.clj"
       - "test/metabase/dima/native_material_observation_test.clj"
+      - "test/metabase/dima/native_attestation_test.clj"
       - ".dima/release.json"
       - ".github/workflows/dima-engine-dima11p1-focused.yml"
 
@@ -38,7 +40,7 @@ jobs:
               ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**", "resources/**"],
               text=True,
           ).splitlines())
-          expected = {"src/metabase/dima/native_material_observation.clj"}
+          expected = {"src/metabase/dima/native_material_observation.clj", "src/metabase/dima/native_attestation.clj"}
           assert changed == expected, (changed, expected)
           print("dima11_to_dima11p1_production_delta=" + ",".join(sorted(changed)))
           PY
@@ -57,7 +59,7 @@ jobs:
                    metabase.dima.native-execution-test
                    metabase.dima.execution-api-contract-test]'
 
-      - name: Require observer namespace
+      - name: Require observer and attestation namespaces
         run: >-
           clojure -M:dev:oss:oss-dev
-          -e "(require 'metabase.dima.native-material-observation)"
+          -e "(require 'metabase.dima.native-material-observation 'metabase.dima.native-attestation)"

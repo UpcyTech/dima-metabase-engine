@@ -1,6 +1,6 @@
-# DIMA 0.63.18-dima.11.1 single-shot certification candidate
+# DIMA 0.63.18-dima.11.2 single-shot certification candidate
 # Activation commit: exact immutable release-branch candidate.
-name: dima-engine-dima11p1-certify
+name: dima-engine-dima11p2-certify
 
 on:
   push:
@@ -26,7 +26,7 @@ permissions:
 env:
   UPSTREAM_SHA: 2ba2485c78d7e00a9a25f82c00fc201da71590c4
   DIMA11_SHA: f8ba5cf32d265f1d4210ac8513bf273df7f44e60
-  RUNTIME_TAG: v0.63.18-dima.11.1.1
+  RUNTIME_TAG: v0.63.18-dima.11.2.1
   IMAGE_REPOSITORY: ghcr.io/upcytech/dima-metabase-engine
   CANDIDATE_SHA: ${{ github.sha }}
   CACHE_SCOPE: dima-engine-c0-v06318
@@ -40,7 +40,7 @@ jobs:
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           fetch-depth: 64
-      - name: Prove exact dima.11 to dima.11.1 production delta
+      - name: Prove exact dima.11 to dima.11.2 production delta
         shell: bash
         run: |
           set -euo pipefail
@@ -53,15 +53,15 @@ jobs:
               ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**", "resources/**"],
               text=True,
           ).splitlines())
-          expected = {"src/metabase/dima/native_material_observation.clj"}
+          expected = {"src/metabase/dima/native_material_observation.clj", "src/metabase/dima/native_attestation.clj"}
           assert changed == expected, (changed, expected)
-          print("dima11_to_dima11p1_production_delta=" + ",".join(sorted(changed)))
+          print("dima11_to_dima11p2_production_delta=" + ",".join(sorted(changed)))
           PY
       - name: Prepare backend
         uses: ./.github/actions/prepare-backend
         with:
           java-version: "25"
-      - name: Run bounded Dima dima.11.1 lifecycle tests
+      - name: Run bounded Dima dima.11.2 lifecycle tests
         run: >-
           clojure -X:dev:ci:test:oss:oss-dev
           :only '[metabase.metabot.agent.profiles-test
@@ -121,7 +121,7 @@ jobs:
           assert p["deleted_upstream_file_count"] == 0, p
           assert p["sync_conflict_count"] == 0, p
           PY
-      - name: Prove dima.11.1 semantic owner boundaries
+      - name: Prove dima.11.2 semantic owner boundaries
         run: |
           set -euo pipefail
           test -z "$(git diff --name-only "$UPSTREAM_SHA"..HEAD -- 'resources/metabot/prompts/**')"
@@ -179,9 +179,9 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE_TAG="$IMAGE_REPOSITORY:sha-$CANDIDATE_SHA"
-          docker run -d --rm --name dima11p1-source-smoke -p 127.0.0.1:3313:3000 \
+          docker run -d --rm --name dima11p2-source-smoke -p 127.0.0.1:3313:3000 \
             -e DIMA_ENGINE_IMAGE_IDENTITY="source-build:$CANDIDATE_SHA" "$IMAGE_TAG"
-          trap 'docker logs dima11p1-source-smoke || true; docker rm -f dima11p1-source-smoke 2>/dev/null || true' EXIT
+          trap 'docker logs dima11p2-source-smoke || true; docker rm -f dima11p2-source-smoke 2>/dev/null || true' EXIT
           for i in $(seq 1 120); do
             curl -fsS http://127.0.0.1:3313/api/health | grep -q '"status":"ok"' && exit 0
             sleep 2
@@ -213,7 +213,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker rm -f dima11p1-source-smoke 2>/dev/null || true
+          docker rm -f dima11p2-source-smoke 2>/dev/null || true
           docker image rm "$IMAGE_REPOSITORY:sha-$CANDIDATE_SHA" 2>/dev/null || true
           docker image rm "$IMMUTABLE_IMAGE_REF" 2>/dev/null || true
           docker logout ghcr.io || true
@@ -223,7 +223,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --rm --name dima11p1-digest-verify -p 127.0.0.1:3314:3000 \
+          docker run -d --rm --name dima11p2-digest-verify -p 127.0.0.1:3314:3000 \
             -e DIMA_ENGINE_REPOSITORY=UpcyTech/dima-metabase-engine \
             -e DIMA_ENGINE_REVISION_SHA="$CANDIDATE_SHA" \
             -e DIMA_ENGINE_UPSTREAM_BASE_SHA="$UPSTREAM_SHA" \
@@ -231,7 +231,7 @@ jobs:
             -e DIMA_ENGINE_BUILD_IDENTITY="$BUILD_IDENTITY" \
             -e DIMA_ENGINE_IMAGE_IDENTITY="$REGISTRY_DIGEST" \
             "$IMMUTABLE_IMAGE_REF"
-          trap 'docker logs dima11p1-digest-verify || true; docker rm -f dima11p1-digest-verify 2>/dev/null || true' EXIT
+          trap 'docker logs dima11p2-digest-verify || true; docker rm -f dima11p2-digest-verify 2>/dev/null || true' EXIT
           for i in $(seq 1 120); do
             if curl -fsS http://127.0.0.1:3314/api/health | grep -q '"status":"ok"'; then break; fi
             sleep 2
@@ -243,7 +243,7 @@ jobs:
           from uuid import UUID
 
           base = "http://127.0.0.1:3314"
-          email = "certify-dima11p1@localhost.invalid"
+          email = "certify-dima11p2@localhost.invalid"
           password = "Cert-" + os.environ["CANDIDATE_SHA"][:20] + "-Aa1!"
 
           def req(method, path, payload=None, session=None):
@@ -270,7 +270,7 @@ jobs:
                   "last_name": "Certify",
                   "password": password,
               },
-              "prefs": {"site_name": "Dima Engine dima.11.1 Certification"},
+              "prefs": {"site_name": "Dima Engine dima.11.2 Certification"},
           })
           session = str((setup or {}).get("id") or "")
           if not session:
@@ -299,7 +299,7 @@ jobs:
               "schema_version": "dima_engine_certified_image_v1",
               "engine_repository": "UpcyTech/dima-metabase-engine",
               "engine_revision_sha": os.environ["CANDIDATE_SHA"],
-              "engine_release": "0.63.18-dima.11.1",
+              "engine_release": "0.63.18-dima.11.2",
               "upstream_base_sha": os.environ["UPSTREAM_SHA"],
               "source_certification_run_id": os.environ["GITHUB_RUN_ID"],
               "build_identity": os.environ["BUILD_IDENTITY"],
@@ -317,7 +317,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: dima11p1-certified-image-${{ env.CANDIDATE_SHA }}
+          name: dima11p2-certified-image-${{ env.CANDIDATE_SHA }}
           path: .dima/reports/certify/DIMA_ENGINE_CERTIFIED_IMAGE.json
           if-no-files-found: error
           retention-days: 30
@@ -343,7 +343,7 @@ jobs:
           case "$REGISTRY_DIGEST" in sha256:*) ;; *) exit 1 ;; esac
           case "$IMMUTABLE_IMAGE_REF" in "$IMAGE_REPOSITORY@sha256:"*) ;; *) exit 1 ;; esac
           {
-            echo "### DIMA ENGINE 0.63.18-dima.11.1 CERTIFIED CANDIDATE"
+            echo "### DIMA ENGINE 0.63.18-dima.11.2 CERTIFIED CANDIDATE"
             echo
             echo "- candidate SHA: $CANDIDATE_SHA"
             echo "- immutable image: $IMMUTABLE_IMAGE_REF"
