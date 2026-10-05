@@ -851,13 +851,13 @@
                        (dima.attestation/exact-query-fingerprint exact_serialized_pmbql)))))))))))
 
 (deftest aggregation-field-ids-treat-java-scalars-as-atomic-leaves-test
-  (let [field-a (mt/id :orders :total)
-        field-b (mt/id :orders :created_at)
+  (let [mp (mt/metadata-provider)
+        total (lib.metadata/field mp (mt/id :orders :total))
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
         instant (OffsetDateTime/parse "2026-06-01T00:00:00Z")
-        clause [:sum-where {}
-                [:field {} field-a]
-                [:>= {} [:field {} field-b] instant]]]
-    (is (= (vec (sort [field-a field-b]))
+        clause (lib/sum-where total (lib/>= created-at instant))]
+    (is (= (vec (sort [(mt/id :orders :total)
+                       (mt/id :orders :created_at)]))
            (#'dima.attestation/referenced-field-ids clause)))))
 
 (deftest native-metric-expanded-count-field-is-not-count-star-test
