@@ -118,8 +118,8 @@
          sort
          vec)))
 
-(defn- aggregation-fact [query stage-number aggregation]
-  (let [{:keys [operator]} (lib/expression-parts query stage-number aggregation)
+(defn- aggregation-fact [_query _stage-number aggregation]
+  (let [operator           (first aggregation)
         field-ids          (referenced-field-ids aggregation)
         distinct?          (= operator :distinct)
         argument-kind      (cond
