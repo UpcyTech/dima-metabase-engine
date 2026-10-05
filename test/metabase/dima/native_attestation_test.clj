@@ -126,6 +126,62 @@
     {:metric metric
      :query query}))
 
+(defn- previous-stage-column
+  [query predicate]
+  (some predicate (lib/visible-columns query -1)))
+
+(defn- attestation-period-pair-change-query
+  [metric-id]
+  (let [mp         (mt/metadata-provider)
+        orders     (lib.metadata/table mp (mt/id :orders))
+        entity     (lib.metadata/field mp (mt/id :orders :user_id))
+        created-at (lib.metadata/field mp (mt/id :orders :created_at))
+        metric     (lib.metadata/metric mp metric-id)
+        stage0     (-> (lib/query mp orders)
+                       (lib/breakout entity)
+                       (lib/breakout created-at)
+                       (lib/aggregate metric))
+        stage1     (lib/append-stage stage0)
+        entity1    (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :user_id) (:id %)))
+        date1      (previous-stage-column
+                    stage1
+                    #(= (mt/id :orders :created_at) (:id %)))
+        metric1    (previous-stage-column
+                    stage1
+                    #(and (= :source/previous-stage (:lib/source %))
+                          (nil? (:id %))
+                          (not (:lib/breakout? %))))
+        baseline   (lib/with-expression-name
+                    (lib/sum-where
+                     metric1
+                     (lib/and
+                      (lib/>= date1 "2026-05-01T00:00:00")
+                      (lib/< date1 "2026-06-01T00:00:00")))
+                    "Baseline Total")
+        comparison (lib/with-expression-name
+                    (lib/sum-where
+                     metric1
+                     (lib/and
+                      (lib/>= date1 "2026-06-01T00:00:00")
+                      (lib/< date1 "2026-07-01T00:00:00")))
+                    "Comparison Total")
+        stage1a    (-> stage1
+                       (lib/aggregate baseline)
+                       (lib/aggregate comparison)
+                       (lib/breakout entity1))
+        stage2     (lib/append-stage stage1a)
+        baseline2  (previous-stage-column
+                    stage2
+                    #(= "Baseline Total" (:display-name %)))
+        compare2   (previous-stage-column
+                    stage2
+                    #(= "Comparison Total" (:display-name %)))
+        delta-name "Period Delta"
+        stage2a    (lib/expression stage2 delta-name (lib/- compare2 baseline2))]
+    (lib/order-by stage2a (lib/expression-ref stage2a delta-name) :desc)))
+
 (defn- metric-observation-view
   [query]
   (-> query
@@ -820,3 +876,79 @@
     (is (= "distinct" (:operator (first facts))))
     (is (= "field" (:argument_kind (first facts))))
     (is (true? (:distinct (first facts))))))
+
+
+(deftest period-pair-change-native-metric-attestation-is-structural-test
+  (testing "attestation reports legal multi-stage native metric expansion without owning CHANGE semantics"
+    (mt/test-driver :h2
+      (let [owner-id (mt/user->id :rasta)
+            convo-id (str (random-uuid))
+            query-id "p14-period-pair-change-attestation"
+            definition (count-star-query)]
+        (mt/with-temp
+          [:model/Card
+           {metric-id :id metric-entity-id :entity_id}
+           {:name "P14 Period Pair Metric"
+            :type :metric
+            :database_id (mt/id)
+            :table_id (mt/id :orders)
+            :dataset_query definition}]
+          (let [query (attestation-period-pair-change-query metric-id)]
+            (mt/with-current-user owner-id
+              (persist-turn! {:conversation-id convo-id
+                              :query-id query-id
+                              :query query
+                              :user-id owner-id})
+              (binding [dima.attestation/*runtime-identity-override* test-runtime]
+                (let [{:keys [manifest]}
+                      (dima.attestation/attest-native-query!
+                       {:conversation_id (java.util.UUID/fromString convo-id)
+                        :native_query_id query-id})]
+                  (is (= query-id (:native_query_id manifest)))
+                  (is (= [{:stage_number 0
+                           :aggregation_index 0
+                           :metabase_metric_id metric-id
+                           :metabase_metric_entity_id metric-entity-id}]
+                         (:native_metric_references manifest)))
+                  (is (> (:aggregation_count manifest) 1))
+                  (is (= 1 (:order_by_count manifest))))))))))))
+
+(deftest attestation-does-not-own-mixed-metric-change-legality-test
+  (testing "attestation may describe multiple native metric references; semantic observer/verifier owns legality"
+    (mt/test-driver :h2
+      (let [mp0 (mt/metadata-provider)
+            orders (lib.metadata/table mp0 (mt/id :orders))
+            total (lib.metadata/field mp0 (mt/id :orders :total))
+            quantity (lib.metadata/field mp0 (mt/id :orders :quantity))
+            def-a (-> (lib/query mp0 orders) (lib/aggregate (lib/sum total)))
+            def-b (-> (lib/query mp0 orders) (lib/aggregate (lib/sum quantity)))
+            metric-a 910001
+            metric-b 910002]
+        (mt/with-temp
+          [:model/Card
+           {metric-a :id entity-a :entity_id}
+           {:name "Attestation Metric A"
+            :type :metric
+            :database_id (mt/id)
+            :table_id (mt/id :orders)
+            :dataset_query def-a}
+           :model/Card
+           {metric-b :id entity-b :entity_id}
+           {:name "Attestation Metric B"
+            :type :metric
+            :database_id (mt/id)
+            :table_id (mt/id :orders)
+            :dataset_query def-b}]
+          (let [mp (mt/metadata-provider)
+                query (-> (lib/query mp (lib.metadata/table mp (mt/id :orders)))
+                          (lib/aggregate (lib.metadata/metric mp metric-a))
+                          (lib/aggregate (lib.metadata/metric mp metric-b)))
+                refs (#'dima.attestation/native-metric-references query)
+                facts (#'dima.attestation/attested-aggregation-facts
+                       query
+                       (metric-observation-view query)
+                       refs)]
+            (is (= 2 (count refs)))
+            (is (= 2 (count facts)))
+            (is (= #{entity-a entity-b}
+                   (set (map :metabase_metric_entity_id refs))))))))))
