@@ -18,7 +18,9 @@
    [metabase.query-processor.middleware.permissions :as qp.perms]
    [metabase.test :as mt]
    [metabase.test.fixtures :as fixtures]
-   [toucan2.core :as t2]))
+   [toucan2.core :as t2])
+  (:import
+   (java.time OffsetDateTime)))
 
 ; P13B native metric provider-free probe marker: no production behavior.
 (use-fixtures :once (fixtures/initialize :db))
@@ -847,6 +849,16 @@
                 (is (= 2 (count (:temporal_predicates manifest))))
                 (is (= fingerprint
                        (dima.attestation/exact-query-fingerprint exact_serialized_pmbql)))))))))))
+
+(deftest aggregation-field-ids-treat-java-scalars-as-atomic-leaves-test
+  (let [field-a (mt/id :orders :total)
+        field-b (mt/id :orders :created_at)
+        instant (OffsetDateTime/parse "2026-06-01T00:00:00Z")
+        clause [:sum-where {}
+                [:field {} field-a]
+                [:>= {} [:field {} field-b] instant]]]
+    (is (= (vec (sort [field-a field-b]))
+           (#'dima.attestation/referenced-field-ids clause)))))
 
 (deftest native-metric-expanded-count-field-is-not-count-star-test
   (let [{:keys [query]}
