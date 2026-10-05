@@ -128,7 +128,7 @@
 
 (defn- previous-stage-column
   [query predicate]
-  (some predicate (lib/visible-columns query -1)))
+  (some #(when (predicate %) %) (lib/visible-columns query -1)))
 
 (defn- attestation-period-pair-change-query
   [metric-id]
