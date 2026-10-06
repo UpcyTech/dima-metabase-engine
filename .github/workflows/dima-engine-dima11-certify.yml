@@ -53,7 +53,11 @@ jobs:
               ["git", "diff", "--name-only", f"{base}..HEAD", "--", "src/**", "resources/**"],
               text=True,
           ).splitlines())
-          expected = {"src/metabase/dima/native_material_observation.clj", "src/metabase/dima/native_attestation.clj"}
+          expected = {
+              "src/metabase/dima/native_material_observation.clj",
+              "src/metabase/dima/native_attestation.clj",
+              "src/metabase/dima/native_query_compat.clj",
+          }
           assert changed == expected, (changed, expected)
           print("dima11_to_dima11p2_production_delta=" + ",".join(sorted(changed)))
           PY
