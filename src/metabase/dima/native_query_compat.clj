@@ -37,6 +37,31 @@
   (or (= x :absolute-datetime)
       (= x "absolute-datetime")))
 
+(defn- canonical-local-datetime-wire-value [value]
+  (if-not (string? value)
+    value
+    (let [parsed (try
+                   (t/local-date-time value)
+                   (catch Exception _ nil))]
+      (if (instance? java.time.LocalDateTime parsed)
+        (str parsed)
+        value))))
+
+(defn- canonicalize-absolute-datetime-wire [query]
+  (walk/postwalk
+   (fn [value]
+     (if (and (vector? value)
+              (= 4 (count value))
+              (absolute-datetime-tag? (first value)))
+       (assoc value 2
+              (canonical-local-datetime-wire-value (nth value 2)))
+       value))
+   query))
+
+(defn- exact-wire-equivalent? [left right]
+  (= (canonicalize-absolute-datetime-wire left)
+     (canonicalize-absolute-datetime-wire right)))
+
 (defn- hydrate-absolute-datetime-clause [clause]
   (if-not (and (vector? clause)
                (= 4 (count clause))
@@ -69,7 +94,7 @@
   (let [authority (exact-serialized-query query)
         hydrated  (walk/postwalk hydrate-absolute-datetime-clause query)
         roundtrip (exact-serialized-query hydrated)]
-    (when-not (= authority roundtrip)
+    (when-not (exact-wire-equivalent? authority roundtrip)
       (fail! "NATIVE_QUERY_RUNTIME_ROUNDTRIP_MISMATCH" 409
              "Hydrated runtime query does not serialize back to the exact authoritative pMBQL artifact"
              nil))
@@ -87,7 +112,9 @@
     (let [restored (lib/query
                     (lib-be/application-database-metadata-provider database-id)
                     exact-serialized-pmbql)]
-      (when-not (= exact-serialized-pmbql (exact-serialized-query restored))
+      (when-not (exact-wire-equivalent?
+                 exact-serialized-pmbql
+                 (exact-serialized-query restored))
         (fail! "NATIVE_QUERY_RUNTIME_ROUNDTRIP_MISMATCH" 409
                "Native Lib restore changed the authoritative serialized pMBQL artifact"
                nil))

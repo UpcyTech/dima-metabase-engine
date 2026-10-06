@@ -1,6 +1,7 @@
 (ns metabase.dima.native-execution-test
   (:require
    [clojure.test :refer :all]
+   [clojure.walk :as walk]
    [metabase.api.common :as api]
    [metabase.dima.native-attestation :as dima.attestation]
    [metabase.dima.native-execution :as dima.execution]
@@ -233,6 +234,34 @@
                       {:state {:queries {query-id (temporal-ranking-query)}}})
           (is (= "NATIVE_QUERY_STATE_MISMATCH"
                  (exception-code #(execute! convo-id query-id attestation)))))))))
+
+(deftest local-datetime-explicit-seconds-wire-is-runtime-equivalent-test
+  (mt/test-driver :h2
+    (let [authority (dima.attestation/exact-serialized-query
+                     (temporal-ranking-query))
+          explicit-seconds
+          (walk/postwalk
+           (fn [value]
+             (if (and (vector? value)
+                      (= "absolute-datetime" (first value))
+                      (= 4 (count value))
+                      (string? (nth value 2)))
+               (update value 2
+                       #(case %
+                          "2010-01-01T00:00" "2010-01-01T00:00:00"
+                          "2030-01-01T00:00" "2030-01-01T00:00:00"
+                          %))
+               value))
+           authority)
+          restored (dima.compat/restore-exact-runtime-query! explicit-seconds)]
+      (is (#'dima.compat/exact-wire-equivalent?
+           explicit-seconds
+           (dima.attestation/exact-serialized-query restored)))
+      (is (= 2
+             (count
+              (->> (tree-seq coll? seq restored)
+                   (filter #(and (vector? %)
+                                 (= :absolute-datetime (first %)))))))))))
 
 (deftest unsupported-temporal-representation-fails-closed-test
   (mt/test-driver :h2
