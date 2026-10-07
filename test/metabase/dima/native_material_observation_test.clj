@@ -1125,6 +1125,32 @@
           :table_id (mt/id :orders)
           :dataset_query definition}]
         (let [query (dima113-case-sum-period-pair-query metric-id)]
+          (doseq [stage-number (range 4)]
+            (println
+             "DIMA113_LINEAGE_STAGE"
+             stage-number
+             (pr-str
+              {:visible
+               (mapv #(select-keys % [:name :display-name :lib/source
+                                      :lib/source-uuid :lib/source-column-alias
+                                      :lib/desired-column-alias :lib/expression-name
+                                      :id :table-id :lib/breakout?])
+                     (lib/visible-columns query stage-number))
+               :returned
+               (mapv #(select-keys % [:name :display-name :lib/source
+                                      :lib/source-uuid :lib/source-column-alias
+                                      :lib/desired-column-alias :lib/expression-name
+                                      :id :table-id :lib/breakout?])
+                     (lib/returned-columns query stage-number))
+               :aggregations
+               (lib/aggregations query stage-number)
+               :aggregation-metadata
+               (mapv #(select-keys % [:name :display-name :lib/source
+                                      :lib/source-uuid :lib/source-column-alias
+                                      :lib/desired-column-alias])
+                     (or (lib/aggregations-metadata query stage-number) []))
+               :expressions (lib/expressions query stage-number)
+               :order-bys (lib/order-bys query stage-number)})))
           (mt/with-current-user owner-id
             (persist-turn! {:conversation-id convo-id
                             :query-id query-id
