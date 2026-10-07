@@ -449,13 +449,29 @@
      (when-let [metric (stable-metric-identity value)]
        {:kind :metric :metric metric}))
 
+   (when (and (vector? value)
+              (#{:field :aggregation :expression} (first value)))
+     (when-let [column
+                (lib.equality/find-matching-column
+                 query
+                 stage-number
+                 value
+                 (or (lib/visible-columns query stage-number) []))]
+       (material-lineage-fact
+        query stage-number metric-index column)))
+
    (when (and (map? value)
               (= :source/previous-stage (:lib/source value))
               (pos? stage-number))
-     (when-let [source
-                (previous-stage-source-value query stage-number value)]
-       (material-lineage-fact
-        query (dec stage-number) metric-index source)))
+     (or
+      (when-let [metric
+                 (previous-stage-governed-metric
+                  query stage-number metric-index value)]
+        {:kind :metric :metric metric})
+      (when-let [source
+                 (previous-stage-source-value query stage-number value)]
+        (material-lineage-fact
+         query (dec stage-number) metric-index source))))
 
    (let [parts (try
                  (lib/expression-parts query stage-number value)
