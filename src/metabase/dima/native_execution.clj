@@ -7,6 +7,7 @@
   (:require
    [clojure.string :as str]
    [metabase.dima.native-attestation :as dima.attestation]
+   [metabase.dima.native-material-observation :as dima.material]
    [metabase.dima.native-query-compat :as dima.compat]
    [metabase.query-processor :as qp])
   (:import
@@ -22,6 +23,25 @@
                    (merge {:status-code status
                            :dima/error-code code}
                           data)))))
+
+(defn- execution-facts
+  [conversation-id native-query-id]
+  (try
+    {:status "OBSERVED"
+     :observation
+     (dima.material/observe-native-query-material!
+      {:conversation_id conversation-id
+       :native_query_id native-query-id})}
+    (catch clojure.lang.ExceptionInfo e
+      {:status "UNAVAILABLE"
+       :error_code (or (:dima/error-code (ex-data e))
+                       "NATIVE_EXECUTION_FACTS_UNAVAILABLE")
+       :detail (ex-message e)})
+    (catch Exception e
+      {:status "UNAVAILABLE"
+       :error_code "NATIVE_EXECUTION_FACTS_UNAVAILABLE"
+       :detail (.getMessage e)})))
+
 
 (defn execute-native-query!
   "Execute one exact server-side Metabot occurrence after identity binding.
@@ -76,4 +96,6 @@
        :executed_pmbql_fingerprint observed-fingerprint
        :runtime_identity runtime
        :result result
-       :attestation attestation})))
+       :attestation attestation
+       :execution_facts
+       (execution-facts conversation_id native_query_id)})))

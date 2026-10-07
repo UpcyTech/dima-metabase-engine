@@ -5,6 +5,7 @@
    [metabase.api.common :as api]
    [metabase.dima.native-attestation :as dima.attestation]
    [metabase.dima.native-execution :as dima.execution]
+   [metabase.dima.native-material-observation :as dima.material]
    [metabase.dima.native-query-compat :as dima.compat]
    [metabase.lib.core :as lib]
    [metabase.lib.metadata :as lib.metadata]
@@ -277,3 +278,30 @@
       (is (= (dima.attestation/exact-serialized-query query)
              (dima.attestation/exact-serialized-query
               (dima.compat/hydrate-runtime-query! query)))))))
+
+
+(deftest execution-fact-extraction-cannot-veto-successful-native-execution-test
+  (mt/test-driver :h2
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "fact-extraction-non-veto"]
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id
+                        :query-id query-id
+                        :query (count-star-query)
+                        :user-id owner-id})
+        (let [attestation (attest! convo-id query-id)]
+          (with-redefs [dima.material/observe-native-query-material!
+                        (fn [& _]
+                          (throw
+                           (ex-info
+                            "fact extraction incomplete"
+                            {:dima/error-code
+                             "NATIVE_EXECUTION_FACTS_INCOMPLETE"})))]
+            (let [execution (execute! convo-id query-id attestation)]
+              (is (= :completed (get-in execution [:result :status])))
+              (is (= "UNAVAILABLE"
+                     (get-in execution [:execution_facts :status])))
+              (is (= "NATIVE_EXECUTION_FACTS_INCOMPLETE"
+                     (get-in execution
+                             [:execution_facts :error_code]))))))))))

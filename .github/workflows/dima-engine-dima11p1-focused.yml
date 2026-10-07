@@ -1,4 +1,4 @@
-name: dima-engine-dima11p2-focused
+name: dima-engine-dima11p3-focused
 
 on:
   push:
@@ -8,6 +8,8 @@ on:
       - "src/metabase/dima/native_material_observation.clj"
       - "src/metabase/dima/native_attestation.clj"
       - "src/metabase/dima/native_query_compat.clj"
+      - "src/metabase/dima/native_execution.clj"
+      - "src/metabase/dima/api.clj"
       - "test/metabase/dima/native_material_observation_test.clj"
       - "test/metabase/dima/native_attestation_test.clj"
       - "test/metabase/dima/native_execution_test.clj"
@@ -46,6 +48,8 @@ jobs:
               "src/metabase/dima/native_material_observation.clj",
               "src/metabase/dima/native_attestation.clj",
               "src/metabase/dima/native_query_compat.clj",
+              "src/metabase/dima/native_execution.clj",
+              "src/metabase/dima/api.clj",
           }
           assert changed == expected, (changed, expected)
           print("dima11_to_dima11p1_production_delta=" + ",".join(sorted(changed)))

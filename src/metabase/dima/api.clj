@@ -166,7 +166,12 @@
    [:order_index ms/IntGreaterThanOrEqualToZero]
    [:target NativeMaterialRankingTarget]
    [:direction [:enum "asc" "desc"]]
-   [:limit {:optional true} ms/IntGreaterThanOrEqualToZero]])
+   [:basis [:enum "level" "change"]]
+   [:limit {:optional true} ms/IntGreaterThanOrEqualToZero]
+   [:change_periods {:optional true}
+    [:map
+     [:baseline NativeMaterialTemporalScope]
+     [:comparison NativeMaterialTemporalScope]]]])
 
 (def ^:private NativeMaterialObservationResponse
   [:map
@@ -185,6 +190,13 @@
    [:temporal_scopes [:sequential NativeMaterialTemporalScope]]
    [:ranking [:sequential NativeMaterialRanking]]])
 
+(def ^:private NativeExecutionFacts
+  [:map
+   [:status [:enum "OBSERVED" "UNAVAILABLE"]]
+   [:observation {:optional true} NativeMaterialObservationResponse]
+   [:error_code {:optional true} ms/NonBlankString]
+   [:detail {:optional true} ms/NonBlankString]])
+
 (def ^:private NativeQueryExecutionResponse
   [:map
    [:native_conversation_id ms/UUIDString]
@@ -193,7 +205,8 @@
    [:executed_pmbql_fingerprint [:re #"^[0-9a-f]{64}$"]]
    [:runtime_identity RuntimeIdentityResponse]
    [:result :map]
-   [:attestation NativeQueryAttestationResponse]])
+   [:attestation NativeQueryAttestationResponse]
+   [:execution_facts NativeExecutionFacts]])
 
 
 (defn- check-no-dropped-entries!

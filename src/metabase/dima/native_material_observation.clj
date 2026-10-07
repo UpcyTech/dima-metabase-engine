@@ -309,17 +309,44 @@
   (or (half-open-temporal-interval predicate)
       (bucketed-temporal-equality-interval predicate)))
 
+(defn- unique-source-uuid-match
+  [source-uuid candidates]
+  (when source-uuid
+    (let [matches (vec
+                   (filter
+                    #(= source-uuid (:lib/source-uuid %))
+                    candidates))]
+      (when (= 1 (count matches))
+        (first matches)))))
+
+(defn- canonical-previous-stage-source-uuid
+  [query stage-number column]
+  (when-let [source-alias (:lib/source-column-alias column)]
+    (let [previous-columns (lib/returned-columns query (dec stage-number))
+          alias-matches
+          (vec
+           (filter
+            #(= source-alias (:lib/desired-column-alias %))
+            previous-columns))]
+      (when (= 1 (count alias-matches))
+        (:lib/source-uuid (first alias-matches))))))
+
 (defn- matched-previous-stage-column
   [query stage-number column candidates]
   (when (and (pos? stage-number)
              (map? column)
              (= :source/previous-stage (:lib/source column))
              (seq candidates))
-    (lib.equality/find-matching-column
-     query
-     (dec stage-number)
-     column
-     candidates)))
+    (or
+     (unique-source-uuid-match (:lib/source-uuid column) candidates)
+     (unique-source-uuid-match
+      (canonical-previous-stage-source-uuid query stage-number column)
+      candidates)
+     (lib.equality/find-matching-column
+      query
+      (dec stage-number)
+      column
+      candidates))))
 
 (defn- previous-stage-aggregation
   [query stage-number column]
@@ -348,6 +375,131 @@
           source-uuid (:lib/source-uuid matched)]
       (when source-uuid
         (get metric-index [previous-stage source-uuid])))))
+
+(defn- previous-stage-source-value
+  [query stage-number column]
+  (when (and (pos? stage-number)
+             (map? column)
+             (= :source/previous-stage (:lib/source column)))
+    (let [previous-stage (dec stage-number)
+          columns (or (lib/returned-columns query previous-stage) [])
+          matched (matched-previous-stage-column
+                   query stage-number column columns)]
+      (case (:lib/source matched)
+        :source/aggregations
+        (some-> (previous-stage-aggregation query stage-number column)
+                :aggregation)
+
+        :source/expressions
+        (when-let [expression-name
+                   (or (:lib/expression-name matched)
+                       (:name matched)
+                       (:lib/source-column-alias matched))]
+          (lib.expression/maybe-resolve-expression
+           query previous-stage expression-name))
+
+        nil))))
+
+(declare material-lineage-fact)
+
+(defn- case-period-lineage-fact
+  [query stage-number metric-index value]
+  (when (and (vector? value)
+             (#{:case :if} (first value)))
+    (let [[_tag _opts cases fallback] value]
+      (when (and (= 1 (count cases))
+                 (number? fallback)
+                 (zero? fallback))
+        (let [[predicate measure] (first cases)
+              predicate-parts
+              (lib/expression-parts query stage-number predicate)
+              interval (temporal-period-interval predicate-parts)
+              measure-fact
+              (material-lineage-fact
+               query stage-number metric-index measure)]
+          (when (and interval
+                     (= :metric (:kind measure-fact)))
+            {:kind :period-metric
+             :metric (:metric measure-fact)
+             :interval interval}))))))
+
+(defn- difference-lineage-fact
+  [left right]
+  (when (and (= :period-metric (:kind left))
+             (= :period-metric (:kind right))
+             (same-metric? (:metric left) (:metric right))
+             (same-temporal-axis? left right)
+             (later-period? left right))
+    {:kind :difference
+     :metric (:metric left)
+     :comparison (:interval left)
+     :baseline (:interval right)}))
+
+(defn- material-lineage-fact
+  "Project stable analytical lineage from Lib structures without comparing it
+  to any Dima intent. This returns facts only; fulfillment remains Product-owned."
+  [query stage-number metric-index value]
+  (or
+   (case-period-lineage-fact query stage-number metric-index value)
+
+   (when (and (map? value)
+              (= :metadata/metric (:lib/type value)))
+     (when-let [metric (stable-metric-identity value)]
+       {:kind :metric :metric metric}))
+
+   (when (and (map? value)
+              (= :source/previous-stage (:lib/source value))
+              (pos? stage-number))
+     (when-let [source
+                (previous-stage-source-value query stage-number value)]
+       (material-lineage-fact
+        query (dec stage-number) metric-index source)))
+
+   (let [parts (try
+                 (lib/expression-parts query stage-number value)
+                 (catch Exception _ nil))]
+     (when (expression-parts? parts)
+       (let [operator (:operator parts)
+             args (:args parts)]
+         (cond
+           (= :metadata/metric (:lib/type parts))
+           (when-let [metric (stable-metric-identity parts)]
+             {:kind :metric :metric metric})
+
+           (and (= :sum operator) (= 1 (count args)))
+           (material-lineage-fact
+            query stage-number metric-index (first args))
+
+           (and (= :sum-where operator) (= 2 (count args)))
+           (let [[measure predicate] args
+                 measure-fact
+                 (material-lineage-fact
+                  query stage-number metric-index measure)
+                 interval (temporal-period-interval predicate)]
+             (when (and (= :metric (:kind measure-fact))
+                        interval)
+               {:kind :period-metric
+                :metric (:metric measure-fact)
+                :interval interval}))
+
+           (and (= :- operator) (= 2 (count args)))
+           (difference-lineage-fact
+            (material-lineage-fact
+             query stage-number metric-index (first args))
+            (material-lineage-fact
+             query stage-number metric-index (second args)))
+
+           :else nil))))))
+
+(defn- wire-temporal-scope
+  [interval]
+  (cond-> {:time_field_id (:time_field_id interval)
+           :lower_bound (wire-value (:lower interval))
+           :lower_inclusive true
+           :upper_bound (wire-value (:upper interval))
+           :upper_inclusive false}
+    (pos-int? (:table_id interval))
+    (assoc :table_id (:table_id interval))))
 
 (defn- period-aggregate-observation
   [query stage-number metric-index column]
@@ -556,6 +708,12 @@
       (lib.expression/resolve-expression query stage-number (last target))
       target)))
 
+(defn- order-by-lineage-fact
+  [query stage-number metric-index order-by]
+  (when-let [target (resolved-order-by-target query stage-number order-by)]
+    (material-lineage-fact
+     query stage-number metric-index target)))
+
 (defn- order-by-period-pair-change-metric
   [query stage-number metric-index order-by]
   (when-let [target (resolved-order-by-target query stage-number order-by)]
@@ -585,13 +743,23 @@
                  direction (:direction info)
                  source-key (when column
                               [stage-number (:lib/source-uuid column)])
+                 lineage-fact
+                 (order-by-lineage-fact
+                  query stage-number metric-index order-by)
+                 lineage-change?
+                 (= :difference (:kind lineage-fact))
                  change-metric (or
+                                (when lineage-change?
+                                  (:metric lineage-fact))
                                 (order-by-period-pair-change-metric
                                  query stage-number metric-index order-by)
                                 (when source-key
                                   (get change-index source-key)))
-                 metric (when source-key
-                          (get metric-index source-key))
+                 metric (or
+                         (when (= :metric (:kind lineage-fact))
+                           (:metric lineage-fact))
+                         (when source-key
+                           (get metric-index source-key)))
                  field-id (:id column)
                  target (cond
                           change-metric
@@ -620,7 +788,15 @@
                       :target target
                       :direction (name direction)
                       :basis (if change-metric "change" "level")}
-               (some? limit-value) (assoc :limit limit-value))))
+               (some? limit-value)
+               (assoc :limit limit-value)
+
+               lineage-change?
+               (assoc :change_periods
+                      {:baseline
+                       (wire-temporal-scope (:baseline lineage-fact))
+                       :comparison
+                       (wire-temporal-scope (:comparison lineage-fact))}))))
          order-bys)))
     (stage-numbers query))))
 
