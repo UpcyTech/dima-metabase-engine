@@ -1137,7 +1137,7 @@
                      (get-in rank [:target :metabase_metric_id])))
               (is (= metric-entity-id
                      (get-in rank [:target :metabase_metric_entity_id])))
-              (is (= "2026-05-01T00:00:00Z"
+              (is (= "2026-05-01T00:00:00.000Z"
                      (get-in rank [:change_periods :baseline :lower_bound])))
-              (is (= "2026-07-01T00:00:00Z"
+              (is (= "2026-07-01T00:00:00.000Z"
                      (get-in rank [:change_periods :comparison :upper_bound]))))))))))
