@@ -401,6 +401,8 @@
         nil))))
 
 (declare material-lineage-fact)
+(declare same-temporal-axis?)
+(declare later-period?)
 
 (defn- case-period-lineage-fact
   [query stage-number metric-index value]
