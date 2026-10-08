@@ -677,10 +677,16 @@
         compare2   (previous-stage-column
                     stage2 #(= "Comparison Total" (:display-name %)))
         delta      (lib/- compare2 baseline2)
-        stage2a    (lib/expression stage2 "Period Delta" delta)]
-    (-> stage2a
-        (lib/order-by delta :desc)
-        (lib/limit 2))))
+        stage2a    (-> stage2
+                       (lib/expression "Period Delta" delta)
+                       (lib/limit 2))]
+    ;; Metabot may emit an inline arithmetic expression directly as the
+    ;; ORDER BY target even though the public Lib builder only accepts refs.
+    ;; Persist that neutral MBQL representation exactly; the observer must
+    ;; derive lineage without depending on expression naming.
+    (assoc-in stage2a
+              [:stages 2 :order-by]
+              [[:desc {:lib/uuid (str (random-uuid))} delta]])))
 
 (deftest dima113-inline-period-difference-order-by-has-stable-change-lineage-test
   (mt/test-driver :h2
