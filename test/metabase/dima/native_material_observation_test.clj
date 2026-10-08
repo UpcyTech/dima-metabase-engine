@@ -677,11 +677,7 @@
         compare2   (previous-stage-column
                     stage2 #(= "Comparison Total" (:display-name %)))
         delta      (lib/- compare2 baseline2)
-        stage2a    (-> stage2
-                       (lib/expression "Period Delta" delta)
-                       (lib/with-fields
-                        [entity1 baseline2 compare2
-                         (lib/expression-ref stage2 "Period Delta")]))]
+        stage2a    (lib/expression stage2 "Period Delta" delta)]
     (-> stage2a
         (lib/order-by delta :desc)
         (lib/limit 2))))
