@@ -742,23 +742,33 @@
      (lib/expression-parts query stage-number target))))
 
 
+(defn- order-by-reference-column
+  "Resolve only ref-shaped ORDER BY targets to a visible column.
+
+  Inline arithmetic/expression targets are valid Metabase HOW and have no
+  standalone column ref. Their analytical lineage is derived structurally by
+  order-by-lineage-fact instead of forcing them through ref-only Lib APIs."
+  [query stage-number order-by]
+  (let [target (nth order-by 2 nil)]
+    (when (and (vector? target)
+               (#{:field :aggregation :expression} (first target)))
+      (lib.equality/find-matching-column
+       query
+       stage-number
+       target
+       (or (lib/visible-columns query stage-number) [])))))
+
 (defn- ranking-observations [query metric-index change-index]
   (vec
    (mapcat
     (fn [stage-number]
-      (let [columns (or (lib/orderable-columns query stage-number) [])
-            by-position (into {}
-                              (keep (fn [column]
-                                      (when-some [position (:order-by-position column)]
-                                        [position column])))
-                              columns)
-            order-bys (or (lib/order-bys query stage-number) [])
+      (let [order-bys (or (lib/order-bys query stage-number) [])
             limit-value (lib/current-limit query stage-number)]
         (map-indexed
          (fn [index order-by]
-           (let [column (get by-position index)
-                 info   (lib/display-info query stage-number order-by)
-                 direction (:direction info)
+           (let [column (order-by-reference-column
+                         query stage-number order-by)
+                 direction (first order-by)
                  source-key (when column
                               [stage-number (:lib/source-uuid column)])
                  lineage-fact
