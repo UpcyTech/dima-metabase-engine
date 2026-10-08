@@ -758,17 +758,38 @@
        target
        (or (lib/visible-columns query stage-number) [])))))
 
+(defn- inline-order-target?
+  [order-by]
+  (let [target (nth order-by 2 nil)]
+    (and (vector? target)
+         (not (#{:field :aggregation :expression} (first target))))))
+
 (defn- ranking-observations [query metric-index change-index]
   (vec
    (mapcat
     (fn [stage-number]
       (let [order-bys (or (lib/order-bys query stage-number) [])
+            inline-stage? (boolean (some inline-order-target? order-bys))
+            columns (if inline-stage?
+                      []
+                      (or (lib/orderable-columns query stage-number) []))
+            by-position (into {}
+                              (keep (fn [column]
+                                      (when-some [position (:order-by-position column)]
+                                        [position column])))
+                              columns)
             limit-value (lib/current-limit query stage-number)]
         (map-indexed
          (fn [index order-by]
-           (let [column (order-by-reference-column
-                         query stage-number order-by)
-                 direction (first order-by)
+           (let [column (if inline-stage?
+                          (order-by-reference-column
+                           query stage-number order-by)
+                          (get by-position index))
+                 direction (if inline-stage?
+                             (first order-by)
+                             (:direction
+                              (lib/display-info
+                               query stage-number order-by)))
                  source-key (when column
                               [stage-number (:lib/source-uuid column)])
                  lineage-fact
