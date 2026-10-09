@@ -1,9 +1,9 @@
-name: dima-engine-dima11p3-focused
+name: dima-engine-dima11p4-focused
 
 on:
   push:
     branches:
-      - release/r11p1-dima11-equality-period-observer
+      - release/dima11p4-date-literal-compat
     paths:
       - "src/metabase/dima/native_material_observation.clj"
       - "src/metabase/dima/native_attestation.clj"
