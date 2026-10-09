@@ -282,23 +282,29 @@
       (is (instance? OffsetDateTime (first temporal-values))))))
 
 (deftest malformed-absolute-datetime-still-fails-closed-test
+  (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
+         (exception-code
+          #(#'dima.compat/hydrate-absolute-datetime-clause
+            [:absolute-datetime {} "not-an-iso-datetime" :day])))))
+
+(deftest persisted-offset-temporal-query-attests-and-executes-the-same-occurrence-test
   (mt/test-driver :h2
-    (let [authority
-          (dima.attestation/exact-serialized-query
-           (offset-temporal-query))
-          malformed
-          (walk/postwalk
-           (fn [value]
-             (if (and (vector? value)
-                      (contains? #{"absolute-datetime" :absolute-datetime}
-                                 (first value))
-                      (= 4 (count value)))
-               (assoc value 2 "not-an-iso-datetime")
-               value))
-           authority)]
-      (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
-             (exception-code
-              #(dima.compat/restore-exact-runtime-query! malformed)))))))
+    (let [owner-id (mt/user->id :rasta)
+          convo-id (str (random-uuid))
+          query-id "p13d-offset-temporal"]
+      (mt/with-current-user owner-id
+        (persist-turn! {:conversation-id convo-id
+                        :query-id query-id
+                        :query (dima.attestation/exact-serialized-query
+                                (offset-temporal-query))
+                        :user-id owner-id})
+        (let [attestation (attest! convo-id query-id)
+              execution   (execute! convo-id query-id attestation)]
+          (is (= :completed (get-in execution [:result :status])))
+          (is (= (get-in attestation [:manifest :exact_pmbql_fingerprint])
+                 (:executed_pmbql_fingerprint execution)))
+          (is (= (get-in attestation [:manifest :attestation_id])
+                 (:attestation_id execution))))))))
 
 (deftest non-temporal-p13b-shape-is-unchanged-by-compatibility-codec-test
   (mt/test-driver :h2
