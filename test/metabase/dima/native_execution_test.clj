@@ -290,7 +290,8 @@
           (walk/postwalk
            (fn [value]
              (if (and (vector? value)
-                      (= "absolute-datetime" (first value))
+                      (contains? #{"absolute-datetime" :absolute-datetime}
+                                 (first value))
                       (= 4 (count value)))
                (assoc value 2 "not-an-iso-datetime")
                value))
