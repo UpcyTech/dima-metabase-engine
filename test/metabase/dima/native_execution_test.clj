@@ -174,8 +174,7 @@
           (is (= (get-in attestation [:manifest :exact_pmbql_fingerprint])
                  (:executed_pmbql_fingerprint execution)))
           (is (= (get-in attestation [:manifest :attestation_id])
-                 (:attestation_id execution)))))))))
-
+                 (:attestation_id execution))))))))
 
 (deftest persisted-temporal-ranking-attests-and-executes-the-same-occurrence-test
   (mt/test-driver :h2
