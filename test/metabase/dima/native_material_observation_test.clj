@@ -307,21 +307,21 @@
                    :upper_inclusive false}]
                  (:temporal_scopes out))))))))
 
-(deftest r5-observer-succeeds-while-p13-microscope-remains-strict-test
+(deftest date-only-runtime-compatibility-preserves-observer-and-attestation-test
   (mt/test-driver :h2
     (let [owner-id (mt/user->id :rasta)
           convo-id (str (random-uuid))
-          query-id "strict-microscope"
+          query-id "date-only-runtime-compat"
           query (v3-persisted-absolute-date-query)]
       (mt/with-current-user owner-id
         (persist-turn! {:conversation-id convo-id :query-id query-id
                         :query query :user-id owner-id})
-        (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
-               (exception-code
-                #(binding [dima.attestation/*runtime-identity-override* test-runtime]
-                   (dima.attestation/attest-native-query!
-                    {:conversation_id (java.util.UUID/fromString convo-id)
-                     :native_query_id query-id})))))
+        (is (nil?
+             (exception-code
+              #(binding [dima.attestation/*runtime-identity-override* test-runtime]
+                 (dima.attestation/attest-native-query!
+                  {:conversation_id (java.util.UUID/fromString convo-id)
+                   :native_query_id query-id})))))
         (is (= "dima_native_material_observation_v1"
                (:schema_version (observe! convo-id query-id))))))))
 
