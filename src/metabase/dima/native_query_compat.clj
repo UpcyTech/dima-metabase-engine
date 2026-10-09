@@ -37,15 +37,22 @@
   (or (= x :absolute-datetime)
       (= x "absolute-datetime")))
 
-(defn- canonical-local-datetime-wire-value [value]
+(defn- parsed-absolute-datetime [value]
+  (when (string? value)
+    (or
+     (try
+       (t/local-date-time value)
+       (catch Exception _ nil))
+     (try
+       (java.time.OffsetDateTime/parse value)
+       (catch Exception _ nil)))))
+
+(defn- canonical-absolute-datetime-wire-value [value]
   (if-not (string? value)
     value
-    (let [parsed (try
-                   (t/local-date-time value)
-                   (catch Exception _ nil))]
-      (if (instance? java.time.LocalDateTime parsed)
-        (str parsed)
-        value))))
+    (if-let [parsed (parsed-absolute-datetime value)]
+      (str parsed)
+      value)))
 
 (defn- canonicalize-absolute-datetime-wire [query]
   (walk/postwalk
@@ -54,7 +61,7 @@
               (= 4 (count value))
               (absolute-datetime-tag? (first value)))
        (assoc value 2
-              (canonical-local-datetime-wire-value (nth value 2)))
+              (canonical-absolute-datetime-wire-value (nth value 2)))
        value))
    query))
 
@@ -73,12 +80,10 @@
         clause
 
         (string? value)
-        (let [hydrated (try
-                         (t/local-date-time value)
-                         (catch Exception _ nil))]
-          (when-not (instance? java.time.LocalDateTime hydrated)
+        (let [hydrated (parsed-absolute-datetime value)]
+          (when-not (instance? Temporal hydrated)
             (fail! "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED" 422
-                   "Dima compatibility codec supports only local ISO datetime strings in :absolute-datetime literal slots"
+                   "Dima compatibility codec supports only valid local or offset ISO datetime strings in :absolute-datetime literal slots"
                    {:clause-tag "absolute-datetime"}))
           (assoc clause 2 hydrated))
 

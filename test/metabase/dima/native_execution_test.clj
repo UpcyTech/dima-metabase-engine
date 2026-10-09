@@ -264,13 +264,40 @@
                    (filter #(and (vector? %)
                                  (= :absolute-datetime (first %)))))))))))
 
-(deftest unsupported-temporal-representation-fails-closed-test
+(deftest offset-datetime-compatibility-hydration-is-lossless-test
   (mt/test-driver :h2
-    (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
-           (exception-code
-            #(dima.compat/restore-exact-runtime-query!
-              (dima.attestation/exact-serialized-query
-               (offset-temporal-query))))))))
+    (let [authority (dima.attestation/exact-serialized-query
+                     (offset-temporal-query))
+          restored  (dima.compat/restore-exact-runtime-query! authority)
+          temporal-values
+          (->> (tree-seq coll? seq restored)
+               (filter #(and (vector? %)
+                             (= :absolute-datetime (first %))))
+               (map #(nth % 2))
+               vec)]
+      (is (#'dima.compat/exact-wire-equivalent?
+           authority
+           (dima.attestation/exact-serialized-query restored)))
+      (is (= 1 (count temporal-values)))
+      (is (instance? OffsetDateTime (first temporal-values))))))
+
+(deftest malformed-absolute-datetime-still-fails-closed-test
+  (mt/test-driver :h2
+    (let [authority
+          (dima.attestation/exact-serialized-query
+           (offset-temporal-query))
+          malformed
+          (walk/postwalk
+           (fn [value]
+             (if (and (vector? value)
+                      (= "absolute-datetime" (first value))
+                      (= 4 (count value)))
+               (assoc value 2 "not-an-iso-datetime")
+               value))
+           authority)]
+      (is (= "NATIVE_QUERY_RUNTIME_REPRESENTATION_UNSUPPORTED"
+             (exception-code
+              #(dima.compat/restore-exact-runtime-query! malformed)))))))
 
 (deftest non-temporal-p13b-shape-is-unchanged-by-compatibility-codec-test
   (mt/test-driver :h2
